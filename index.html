@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#697b43">
+<meta name="description" content="残したい範囲以外に写り込んだ顔を自動でモザイクにする、端末内で完結する写真ツール">
+<title>写り込み顔モザイク</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="顔モザイク">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="app.css">
+<script src="guard.js"></script>
+</head>
+<body>
+<div class="app" id="app">
+  <header>
+    <div class="brand">
+      <div class="mark" aria-hidden="true">▦</div>
+      <div>
+        <h1>写り込み顔モザイク by 武庫</h1>
+        <p>残したい人以外の顔を、自動でモザイクにします</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button type="button" id="btn-open" class="subtle">写真を選ぶ</button>
+      <button type="button" id="btn-settings" class="subtle">設定</button>
+    </div>
+  </header>
+
+  <p class="status error" id="boot-error" role="alert" hidden></p>
+
+  <div class="steps" aria-label="手順">
+    <span class="step">① 写真を選ぶ</span>
+    <span class="step">② 残したい人を囲む</span>
+    <span class="step">③ 保存して確認</span>
+  </div>
+
+  <main class="layout">
+    <section class="panel editor" aria-labelledby="h-photo">
+      <div class="panel-head"><h2 id="h-photo">写真</h2></div>
+
+      <label class="file-zone" id="file-zone">
+        <input type="file" id="file" accept="image/*">
+        <span>写真を選ぶ</span>
+        <small>タップして選択／ここへドラッグ＆ドロップ／貼り付け（Ctrl+V）</small>
+      </label>
+
+      <div class="preview" id="stage">
+        <canvas id="cv" aria-label="写真の編集画面"></canvas>
+        <div class="empty" id="empty">
+          <strong>まだ写真がありません</strong>
+          写真を選ぶと、写っている顔を自動で検出します。
+        </div>
+        <div class="chip" id="chip" role="status" aria-live="polite" hidden></div>
+        <div class="zoom" id="zoom" hidden>
+          <button type="button" id="z-in" aria-label="拡大">＋</button>
+          <button type="button" id="z-out" aria-label="縮小">－</button>
+          <button type="button" id="z-fit" aria-label="全体表示">全体</button>
+        </div>
+        <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+        <div class="busy" id="busy" hidden><div><span class="spin" aria-hidden="true"></span><span id="busy-text">処理中…</span></div></div>
+      </div>
+    </section>
+
+    <section class="panel quickbar" aria-label="操作">
+      <div class="field">
+        <span class="field-title" id="t-tool">ツール</span>
+        <div class="choice-row tool-row" role="group" aria-labelledby="t-tool">
+          <button type="button" data-tool="rect" aria-pressed="true" aria-label="残す範囲を四角で指定">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="13" rx="2" stroke-dasharray="3.2 2.6"/></svg>
+            <span>四角</span>
+          </button>
+          <button type="button" data-tool="lasso" aria-pressed="false" aria-label="残す範囲を手描きで指定">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5c5 0 8 1.8 8 4.8s-3.8 5-8 5-8-2-8-5 3-4.8 8-4.8z" stroke-dasharray="3.2 2.6"/><path d="M8.5 14c0 3-1.2 4.5-3.5 5.5"/></svg>
+            <span>手描き</span>
+          </button>
+          <button type="button" id="btn-original" aria-pressed="false" aria-label="全ての顔のモザイクを外して元の画像を表示（もう一度押すとモザイク表示に戻る）" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><path d="M9.2 10.5h.01M14.8 10.5h.01M9.2 14.2c1.7 1.4 4 1.4 5.6 0"/><path d="M5 19L19 5"/></svg>
+            <span>モザイクなし</span>
+          </button>
+        </div>
+        <p class="hint" id="hint"></p>
+      </div>
+      <div class="button-row quick-actions">
+        <button type="button" id="undo" disabled>戻す</button>
+        <button type="button" id="save" class="primary" disabled>保存して確認</button>
+      </div>
+    </section>
+
+    <aside class="panel settings" id="settings" aria-labelledby="h-settings">
+      <div class="panel-head">
+        <h2 id="h-settings">設定</h2>
+        <button type="button" id="btn-reset" class="subtle" disabled>範囲を全消去</button>
+      </div>
+      <div class="controls">
+        <div class="field">
+          <div class="field-header"><label for="r-cells">モザイクの粗さ</label><output class="badge" id="o-cells" for="r-cells"></output></div>
+          <input type="range" id="r-cells" min="4" max="14" step="1" value="7">
+          <small>左ほど粗く、右ほど細かくなります。</small>
+        </div>
+        <div class="field">
+          <div class="field-header"><label for="r-margin">モザイクの範囲</label><output class="badge" id="o-margin" for="r-margin"></output></div>
+          <input type="range" id="r-margin" min="1.2" max="2.2" step="0.1" value="1.6">
+          <small>右ほど髪や耳まで広く隠します。</small>
+        </div>
+        <div class="field">
+          <span class="field-title" id="t-detail">顔の検出</span>
+          <div class="choice-row detail-row" role="group" aria-labelledby="t-detail">
+            <button type="button" data-detail="standard" aria-pressed="true">標準（速い）</button>
+            <button type="button" data-detail="high" aria-pressed="false">高精度（遅い）</button>
+          </div>
+          <small>高精度は、遠くの小さい顔まで探します。</small>
+          <div class="button-row"><button type="button" id="btn-redetect" class="secondary" disabled>この設定で再検出</button></div>
+        </div>
+        <p class="meta" id="info"></p>
+        <div class="privacy">写真はこの端末の中だけで処理され、外部へ送信されません。保存される画像に位置情報などの撮影情報（EXIF）は含まれません。</div>
+      </div>
+    </aside>
+  </main>
+
+  <p class="footer">顔検出: face-api（SSD MobileNet v1）／ライセンス: MIT</p>
+</div>
+
+<div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="m-title">
+  <div class="modal-card">
+    <h2 id="m-title">仕上がりの確認</h2>
+    <div class="modal-img"><img id="m-img" alt="モザイク処理後の写真"></div>
+    <p class="status" id="m-note"></p>
+    <p class="hint">顔が残っていないか確認してください。拡大するときは「原寸で開く」か、編集画面に戻って2本指（ホイール）で拡大します。元の写真は変更されません。</p>
+    <div class="modal-actions">
+      <button type="button" id="m-share" class="primary" hidden>共有・写真に保存</button>
+      <button type="button" id="m-download" class="primary">ダウンロード</button>
+      <a id="m-open" class="btn" target="_blank" rel="noopener noreferrer">原寸で開く</a>
+      <button type="button" id="m-close">閉じて編集に戻る</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+<noscript><p class="status error">このアプリの利用には JavaScript が必要です。</p></noscript>
+</body>
+</html>

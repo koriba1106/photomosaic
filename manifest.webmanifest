@@ -1,0 +1,17 @@
+{
+  "name": "写り込み顔モザイク",
+  "short_name": "顔モザイク",
+  "description": "残したい範囲以外に写り込んだ顔を自動でモザイクにする、端末内で完結する写真ツール",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fbfcf8",
+  "theme_color": "#697b43",
+  "lang": "ja",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
