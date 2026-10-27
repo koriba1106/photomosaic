@@ -108,3 +108,35 @@ test('limitSize: 総画素・長辺の上限', () => {
   const b = g.limitSize(4032, 3024, 16e6, 8192);
   assert.deepEqual(b, { w: 4032, h: 3024, scaled: false });
 });
+
+test('normalizeRect: 順不同・はみ出しは画像内に収め、不正値/小さすぎ/写真の外は null', () => {
+  assert.deepEqual(g.normalizeRect({ x: 50, y: 60 }, { x: 10, y: 20 }, 200, 100), { x: 10, y: 20, w: 40, h: 40 });
+  assert.deepEqual(g.normalizeRect({ x: -30, y: -30 }, { x: 40, y: 50 }, 200, 100), { x: 0, y: 0, w: 40, h: 50 });
+  assert.deepEqual(g.normalizeRect({ x: 150, y: 50 }, { x: 400, y: 400 }, 200, 100), { x: 150, y: 50, w: 50, h: 50 });
+  assert.equal(g.normalizeRect({ x: 300, y: 300 }, { x: 400, y: 400 }, 200, 100), null);        // 写真の外
+  assert.equal(g.normalizeRect({ x: 10, y: 10 }, { x: 15, y: 40 }, 200, 100), null);            // 小さすぎる
+  assert.equal(g.normalizeRect({ x: NaN, y: 0 }, { x: 40, y: 50 }, 200, 100), null);
+  assert.equal(g.normalizeRect({ x: 0, y: 0 }, { x: Infinity, y: 50 }, 200, 100), null);
+  assert.equal(g.normalizeRect(null, { x: 1, y: 1 }, 200, 100), null);
+  assert.equal(g.normalizeRect({ x: 0, y: 0 }, { x: 50, y: 50 }, 0, 100), null);
+  const r = g.normalizeRect({ x: 10.4, y: 10.6 }, { x: 60.2, y: 70.9 }, 200, 100);
+  assert.ok(Number.isInteger(r.x) && Number.isInteger(r.y) && Number.isInteger(r.w) && Number.isInteger(r.h));
+});
+
+test('hitRect: 最小面積優先・小さい枠にも最低限の当たり判定・外れは -1', () => {
+  const view = { s: 1, tx: 0, ty: 0 };
+  const rects = [{ x: 0, y: 0, w: 200, h: 200 }, { x: 80, y: 80, w: 40, h: 40 }, { x: 400, y: 400, w: 4, h: 4 }];
+  assert.equal(g.hitRect(rects, { x: 100, y: 100 }, view), 1);        // 入れ子は小さい方
+  assert.equal(g.hitRect(rects, { x: 10, y: 10 }, view), 0);
+  assert.equal(g.hitRect(rects, { x: 402, y: 402 }, view), 2);
+  assert.equal(g.hitRect(rects, { x: 420, y: 420 }, view), 2);        // 4px 枠でも 44px 四方で当たる
+  assert.equal(g.hitRect(rects, { x: 600, y: 600 }, view), -1);
+  assert.equal(g.hitRect([], { x: 1, y: 1 }, view), -1);
+  assert.equal(g.hitRect(rects, { x: NaN, y: 1 }, view), -1);
+  const zoomed = { s: 4, tx: -300, ty: -300 };                         // 拡大・移動後の画面座標でも正しい
+  assert.equal(g.hitRect(rects, { x: 100 * 4 - 300, y: 100 * 4 - 300 }, zoomed), 1);
+});
+
+test('MAX_MANUAL は妥当な正の整数', () => {
+  assert.ok(Number.isInteger(g.MAX_MANUAL) && g.MAX_MANUAL >= 50 && g.MAX_MANUAL <= 1000);
+});

@@ -66,10 +66,10 @@
 
 /* ---------- ツール／操作 ---------- */
 .quickbar { display: grid; gap: 12px; }
-.tool-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.tool-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .tool-row button {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  min-height: 60px; padding: .5rem .1rem; font-size: .76rem; line-height: 1.2; text-align: center;
+  min-height: 60px; padding: .5rem .1rem; font-size: clamp(.62rem, 2.9vw, .76rem); line-height: 1.2; text-align: center;
   white-space: nowrap; letter-spacing: -.02em;
 }
 .tool-row svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -131,7 +131,7 @@ a.btn:focus-visible { outline: 3px solid #8dad4e; outline-offset: 2px; }
 @media (max-width: 820px) and (max-height: 700px) {
   .hint { display: none; }
   .tool-row button { min-height: 50px; }
-  .preview { height: clamp(170px, calc(100vh - 368px), 680px); height: clamp(170px, calc(100dvh - 368px), 680px); }
+  .preview { height: clamp(170px, calc(100vh - 388px), 680px); height: clamp(170px, calc(100dvh - 388px), 680px); }
 }
 @media (max-width: 380px) { .tool-row button { font-size: .7rem; } .app { padding: 12px; } .brand .mark { display: none; } }
 /* スマホ横向き（高さが小さい）：余白を詰めて写真を大きく */
@@ -148,3 +148,14 @@ a.btn:focus-visible { outline: 3px solid #8dad4e; outline-offset: 2px; }
 .detail-row button { min-height: 44px; }
 .button-row button { min-height: 44px; }
 input[type="range"] { height: 28px; }
+
+/* ---------- 手動追加ツール ---------- */
+.sp-br { display: none; }
+@media (max-width: 360px) { .sp-br { display: inline; } .tool-row button { white-space: normal; } }
+/* 広い画面・スマホ横向き：右カラムが狭いので、ツールは2列×2段（アイコンと文字を横並び） */
+@media (min-width: 821px), (max-height: 520px) and (orientation: landscape) {
+  .tool-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tool-row button { flex-direction: row; justify-content: flex-start; gap: 10px; padding: .5rem .8rem; min-height: 48px; font-size: .84rem; text-align: left; letter-spacing: 0; }
+  .sp-br { display: none; }
+}
+#o-manual { min-width: 3.2em; text-align: center; }

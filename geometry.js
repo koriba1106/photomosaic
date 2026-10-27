@@ -145,3 +145,25 @@ export function limitSize(w, h, maxPixels, maxSide) {
   const k = Math.min(1, Math.sqrt(maxPixels / (w * h)), maxSide / Math.max(w, h));
   return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)), scaled: k < 1 };
 }
+
+/* ---------- 手動モザイク枠 ---------- */
+export const MAX_MANUAL = 300;   // 手動で追加できる枠の上限（暴走・メモリ枯渇の防止）
+
+/** ドラッグした2点（画像座標）→ 画像内に収めた整数矩形。不正値・小さすぎる・写真の外は null */
+export function normalizeRect(a, b, W, H, minSize = 8) {
+  if (!a || !b || ![a.x, a.y, b.x, b.y, W, H].every(Number.isFinite) || W <= 0 || H <= 0) return null;
+  const r = clipRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(a.x - b.x), Math.abs(a.y - b.y), W, H);
+  return r.w >= minSize && r.h >= minSize ? r : null;
+}
+
+/** 画面座標 p が当たる矩形の添字（重なる場合は面積が小さい方）。小さい枠も最低 minHalf*2 px の当たり判定にする。なければ -1 */
+export function hitRect(rects, p, view, minHalf = 22) {
+  if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return -1;
+  let best = -1, bestArea = Infinity;
+  rects.forEach((r, i) => {
+    const cx = (r.x + r.w / 2) * view.s + view.tx, cy = (r.y + r.h / 2) * view.s + view.ty;
+    const hw = Math.max(r.w * view.s / 2, minHalf), hh = Math.max(r.h * view.s / 2, minHalf);
+    if (Math.abs(p.x - cx) <= hw && Math.abs(p.y - cy) <= hh && r.w * r.h < bestArea) { best = i; bestArea = r.w * r.h; }
+  });
+  return best;
+}

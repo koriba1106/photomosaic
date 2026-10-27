@@ -24,7 +24,7 @@
     <div class="brand">
       <div class="mark" aria-hidden="true">▦</div>
       <div>
-        <h1>写り込み顔モザイク by 武庫</h1>
+        <h1>写り込み顔モザイク</h1>
         <p>残したい人以外の顔を、自動でモザイクにします</p>
       </div>
     </div>
@@ -81,9 +81,13 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5c5 0 8 1.8 8 4.8s-3.8 5-8 5-8-2-8-5 3-4.8 8-4.8z" stroke-dasharray="3.2 2.6"/><path d="M8.5 14c0 3-1.2 4.5-3.5 5.5"/></svg>
             <span>手描き</span>
           </button>
+          <button type="button" data-tool="manual" aria-pressed="false" aria-label="検出されなかった顔を四角で囲んで、手動でモザイクを追加">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="12.5" height="12.5" rx="2" stroke-dasharray="3.2 2.6"/><path d="M18.5 13v7M15 16.5h7"/></svg>
+            <span>手動追加</span>
+          </button>
           <button type="button" id="btn-original" aria-pressed="false" aria-label="全ての顔のモザイクを外して元の画像を表示（もう一度押すとモザイク表示に戻る）" disabled>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><path d="M9.2 10.5h.01M14.8 10.5h.01M9.2 14.2c1.7 1.4 4 1.4 5.6 0"/><path d="M5 19L19 5"/></svg>
-            <span>モザイクなし</span>
+            <span>モザイク<br class="sp-br">なし</span>
           </button>
         </div>
         <p class="hint" id="hint"></p>
@@ -111,6 +115,11 @@
           <small>右ほど髪や耳まで広く隠します。</small>
         </div>
         <div class="field">
+          <div class="field-header"><span class="field-title" id="t-manual">手動モザイク</span><output class="badge" id="o-manual" aria-live="polite">0件</output></div>
+          <small>自動で見つからなかった顔は、「手動追加」で囲むとモザイクをかけられます（何個でも）。追加した枠は、「手動追加」を選んでタップすると削除できます。</small>
+          <div class="button-row"><button type="button" id="btn-clear-manual" class="subtle" aria-describedby="t-manual" disabled>手動の枠を全消去</button></div>
+        </div>
+        <div class="field">
           <span class="field-title" id="t-detail">顔の検出</span>
           <div class="choice-row detail-row" role="group" aria-labelledby="t-detail">
             <button type="button" data-detail="standard" aria-pressed="true">標準（速い）</button>
@@ -125,7 +134,7 @@
     </aside>
   </main>
 
-  <p class="footer">顔検出: face-api（SSD MobileNet v1）／ライセンス: MIT</p>
+  <p class="footer">顔検出: face-api（SSD MobileNet v1）／ライセンス: MIT／<span id="ver"></span></p>
 </div>
 
 <div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="m-title">

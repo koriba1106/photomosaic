@@ -17,6 +17,7 @@ try { framed = window.top !== window.self; } catch { framed = true; }
 if (framed) throw new Error('framed');
 
 const $ = (s) => document.querySelector(s);
+const APP_VERSION = '1.2.0';                // package.json・sw.js と一致させる（テストで検査）
 const MAX_FILE_BYTES = 100 * 1024 * 1024;   // 入力ファイルの上限
 const MAX_SOURCE_PIXELS = 120e6;            // デコード前に弾く上限（画像爆弾対策）
 const MAX_PIXELS = 16e6;                    // 処理用に縮小する上限（iOS Safari の canvas 上限を下回る）
@@ -30,12 +31,13 @@ const DEBUG = PARAMS.has('debug') && LOCAL;   // テスト用フックは、手�
 
 const TOOL_HINTS = {
   rect: '残したい人を四角で囲みます（複数可）。囲んだ外の顔にモザイクがかかります。',
-  lasso: '残したい人を指でなぞって囲みます。離すと自動で閉じます（複数可）。'
+  lasso: '残したい人を指でなぞって囲みます。離すと自動で閉じます（複数可）。',
+  manual: '検出されなかった顔を四角で囲むとモザイクを追加（何個でも）。枠をタップで削除。'
 };
 const HINT_ORIGINAL = '元の画像を表示中です。四角・手描きを押すと編集に戻ります。保存するとモザイクが適用されます。';
 
 const el = {
-  app: $('#app'), stage: $('#stage'), cv: $('#cv'), chip: $('#chip'), zoom: $('#zoom'), toast: $('#toast'),
+  app: $('#app'), layout: $('.layout'), clearManual: $('#btn-clear-manual'), oManual: $('#o-manual'), ver: $('#ver'), stage: $('#stage'), cv: $('#cv'), chip: $('#chip'), zoom: $('#zoom'), toast: $('#toast'),
   busy: $('#busy'), busyText: $('#busy-text'), hint: $('#hint'), settings: $('#settings'), boot: $('#boot-error'),
   file: $('#file'), fileZone: $('#file-zone'), undo: $('#undo'), save: $('#save'), reset: $('#btn-reset'), redetect: $('#btn-redetect'),
   original: $('#btn-original'), info: $('#info'), settingsBtn: $('#btn-settings'),
@@ -47,6 +49,8 @@ const S = {
   img: null,            // { source, preview, W, H, name, scaled, origW, origH }
   view: { s: 1, tx: 0, ty: 0 }, fitted: true, minS: 0.05, maxS: 16,
   regions: [], faces: [], raw: [], history: [],
+  manual: [],           // 手動で追加したモザイク枠 { x, y, w, h, manual:true, auto:'mosaic' }（画像座標・整数）
+  exporting: false,
   tool: 'rect', showOriginal: false,
   params: { cells: 7, margin: 1.6, detail: 'standard' },
   detect: { state: 'idle', progress: 0, run: 0 },
@@ -65,9 +69,13 @@ function toast(msg, ms = 2800) {
   el.toast.textContent = msg; el.toast.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.toast.hidden = true; }, ms);
 }
-function setBusy(on, text = '処理中…') { el.busy.hidden = !on; el.busyText.textContent = text; }
+function setBusy(on, text = '処理中…') {
+  el.busy.hidden = !on; el.busyText.textContent = text;
+  if ('inert' in el.layout) el.layout.inert = on;   // 処理中は編集操作・設定変更を受け付けない（状態の食い違い防止）
+}
 const isMosaic = (f) => f.auto === 'mosaic';
 const mosaicFaces = () => S.faces.filter(isMosaic);
+const mosaicTargets = () => [...mosaicFaces(), ...S.manual];   // 書き出し・プレビューの対象
 
 // 予期しないエラーを黙って握りつぶさず、利用者に知らせる（詳細は画面に出さない）
 let lastErrToast = 0;
@@ -133,7 +141,7 @@ async function loadFile(file) {
     if (S.img && S.img.source.close) S.img.source.close();
     const base = (file.name || 'photo').replace(/\.[^.]+$/, '').replace(/[^\w\u3040-\u30ff\u3400-\u9fff-]+/g, '_').replace(/^[._-]+/, '').slice(0, 60) || 'photo';
     S.img = { source, preview, W: w, H: h, name: base, scaled, origW: nw, origH: nh };
-    S.regions = []; S.faces = []; S.raw = []; S.history = []; S.drawing = null; S.gesture = null; S.pointers.clear();
+    S.regions = []; S.faces = []; S.manual = []; S.raw = []; S.history = []; S.drawing = null; S.gesture = null; S.pointers.clear();
     el.app.classList.add('has-image'); el.stage.classList.add('has-image');
     el.zoom.hidden = false;
     closeResult();
@@ -351,13 +359,13 @@ function render() {
   if (S.showOriginal) return;                 // 「モザイクなし」：元の画像だけを表示
 
   // モザイクのプレビュー（書き出しと同じ格子）
-  for (const f of mosaicFaces()) { const c = getCells(f); if (c) drawCells(ctx, c, s, tx, ty); }
+  for (const f of mosaicTargets()) { const c = getCells(f); if (c) drawCells(ctx, c, s, tx, ty); }
 
   const keep = cssVar('--keep') || '#1f9d55', mos = cssVar('--mosaic') || '#d6246e';
   ctx.lineJoin = 'round';
   const polys = S.regions.slice();
   const d = S.drawing;
-  if (d && d.pts.length > 1) polys.push(d.type === 'rect' ? G.rectPoly(d.pts[0], d.pts[d.pts.length - 1]) : d.pts);
+  if (d && d.pts.length > 1 && d.type !== 'manual') polys.push(d.type === 'rect' ? G.rectPoly(d.pts[0], d.pts[d.pts.length - 1]) : d.pts);
   for (const p of polys) {
     ctx.beginPath();
     p.forEach((q, i) => (i ? ctx.lineTo(q.x * s + tx, q.y * s + ty) : ctx.moveTo(q.x * s + tx, q.y * s + ty)));
@@ -370,6 +378,15 @@ function render() {
     ctx.lineWidth = 2; ctx.strokeStyle = k ? keep : mos; ctx.setLineDash(k ? [] : [5, 3]);
     ctx.strokeRect(f.x * s + tx, f.y * s + ty, f.w * s, f.h * s);
     ctx.setLineDash([]);
+  }
+  // 手動で追加した枠（実線・太め）と、ドラッグ中の枠
+  ctx.lineWidth = 3; ctx.strokeStyle = mos;
+  for (const m of S.manual) ctx.strokeRect(m.x * s + tx, m.y * s + ty, m.w * s, m.h * s);
+  if (d && d.type === 'manual' && d.pts.length > 1) {
+    const a = d.pts[0], b = d.pts[d.pts.length - 1];
+    const x = Math.min(a.x, b.x) * s + tx, y = Math.min(a.y, b.y) * s + ty, w = Math.abs(a.x - b.x) * s, h = Math.abs(a.y - b.y) * s;
+    ctx.fillStyle = hexA(mos, 0.18); ctx.fillRect(x, y, w, h);
+    ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.strokeRect(x, y, w, h); ctx.setLineDash([]);
   }
 }
 function hexA(hex, a) {
@@ -421,7 +438,7 @@ el.cv.addEventListener('pointerdown', (e) => {
   S.pointers.set(e.pointerId, p);
   if (S.pointers.size >= 2) { startPinch(); return; }
   if (e.button === 1 || panMode()) { S.gesture = { type: 'pan', last: p }; updateCursor(); return; }
-  S.drawing = { type: S.tool, pts: [imgPt(p)] };
+  S.drawing = { type: S.tool, pts: [imgPt(p)], start: p };
   S.gesture = { type: 'draw' };
 });
 
@@ -502,15 +519,47 @@ function finishDrawing(endP) {
   const d = S.drawing; S.drawing = null;
   if (!d) { requestRender(); return; }
   const minPx = 14;
+  if (d.type === 'manual') { finishManual(d, endP); return; }
   const pts = d.type === 'rect' ? [d.pts[0], d.pts[1] || imgPt(endP)] : d.pts;
   const bb = G.bboxOf(pts);
-  const tooSmall = bb.w * S.view.s < minPx || bb.h * S.view.s < minPx || (d.type === 'lasso' && pts.length < 3);
+  const tooSmall = !Number.isFinite(bb.w + bb.h) || bb.w * S.view.s < minPx || bb.h * S.view.s < minPx || (d.type === 'lasso' && pts.length < 3);
   if (tooSmall) { toast(d.type === 'rect' ? 'ドラッグして範囲を囲んでください。' : '囲みが小さすぎます。もう少し大きくなぞってください。'); requestRender(); return; }
   const poly = d.type === 'rect' ? G.rectPoly(pts[0], pts[1]) : pts;
   S.regions.push(poly);
   pushHistory(() => { S.regions = S.regions.filter((r) => r !== poly); reclassify(); });
   reclassify();
 }
+
+/* ---------- 手動モザイク（検出漏れの顔を、任意の数だけ追加） ---------- */
+function finishManual(d, endP) {
+  const a = d.pts[0], b = d.pts[1] || imgPt(endP);
+  const bb = G.bboxOf([a, b]);
+  const tap = !Number.isFinite(bb.w + bb.h) || bb.w * S.view.s < 14 || bb.h * S.view.s < 14;
+  if (tap) {                                         // ほぼ動かさずに離した＝タップ：既存の枠を削除
+    const i = G.hitRect(S.manual, d.start || endP, S.view);
+    if (i < 0) { toast('ドラッグで、モザイクをかけたい顔を囲んでください。'); requestRender(); return; }
+    const [box] = S.manual.splice(i, 1);
+    pushHistory(() => { S.manual.splice(Math.min(i, S.manual.length), 0, box); refresh(); });
+    toast('手動の枠を削除しました（「戻す」で復元できます）。');
+    refresh(); return;
+  }
+  if (S.manual.length >= G.MAX_MANUAL) { toast(`手動で追加できるのは${G.MAX_MANUAL}件までです。`); requestRender(); return; }
+  const r = G.normalizeRect(a, b, S.img.W, S.img.H, 8);   // 写真内に収め、整数化。不正値・極小・写真の外は却下
+  if (!r) { toast('範囲が小さすぎるか、写真の外です。写真の上で囲んでください。'); requestRender(); return; }
+  const box = { x: r.x, y: r.y, w: r.w, h: r.h, score: 1, manual: true, auto: 'mosaic' };
+  S.manual.push(box);
+  pushHistory(() => { S.manual = S.manual.filter((m) => m !== box); refresh(); });
+  refresh();
+}
+function clearManual() {
+  if (!S.manual.length) return;
+  if (!confirm(`手動で追加したモザイク ${S.manual.length} 件を全て消します。よろしいですか？（「戻す」で復元できます）`)) return;
+  const saved = S.manual;
+  S.manual = [];
+  pushHistory(() => { S.manual = saved; refresh(); });
+  refresh();
+}
+const refresh = () => { updateUI(); requestRender(); };
 
 /* ---------- 履歴 ---------- */
 function pushHistory(undoFn) { S.history.push(undoFn); if (S.history.length > 200) S.history.shift(); }
@@ -542,12 +591,15 @@ function updateUI() {
   el.original.disabled = !has;
   el.redetect.disabled = !has || st === 'loading' || st === 'running';
   el.reset.disabled = !has || !S.regions.length;
+  el.clearManual.disabled = !has || !S.manual.length;
+  el.oManual.textContent = `${S.manual.length}件`;
   if (!has) { setChip(''); return; }
   if (S.showOriginal) { setChip('元の画像を表示中（保存するとモザイクが適用されます）', true); return; }
   if (st === 'running') setChip(`顔を検出中… ${Math.round(S.detect.progress * 100)}%｜現在 ${n}件（モザイク ${m}）`);
   else if (st === 'loading') setChip('顔検出エンジンを準備中…（初回のみ数秒）');
   else if (st === 'error') setChip('顔の検出に失敗しました（設定から再検出できます）', true);
-  else setChip(n ? `顔 ${n}件｜モザイク ${m}｜残す ${n - m}` : '顔は検出されませんでした（見落としがないか確認してください）');
+  else if (n || S.manual.length) setChip(`顔 ${n}件｜モザイク ${m}｜残す ${n - m}` + (S.manual.length ? `｜手動 ${S.manual.length}` : ''));
+  else setChip('顔は検出されませんでした（見落としがないか確認し、「手動追加」で補えます）');
 }
 
 /* ---------- 書き出し・共有（安全側：モザイクを適用できなければ書き出さない） ---------- */
@@ -559,7 +611,7 @@ async function exportBlob() {
   x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
   x.drawImage(source, 0, 0);
   let applied = 0;
-  for (const f of mosaicFaces()) {
+  for (const f of mosaicTargets()) {
     const cells = getCells(f);                     // 例外はそのまま上へ（書き出しを中断）
     if (cells) { drawCells(x, cells, 1, 0, 0); applied++; continue; }
     const r = G.expandFace(f, S.params.margin, W, H);
@@ -572,13 +624,14 @@ async function exportBlob() {
 }
 
 async function onSave() {
-  if (!S.img) return;
+  if (!S.img || S.exporting) return;
   const st = S.detect.state;
   if (st !== 'done' &&
       !confirm(st === 'running'
         ? '顔の検出がまだ途中です。このまま保存すると、まだ見つかっていない顔にモザイクがかかりません。続けますか？'
         : '顔の検出が完了していません。このまま保存すると、検出されていない顔にモザイクがかかりません。続けますか？')) return;
   if (S.showOriginal) syncToolbar(false);          // 保存は常にモザイク適用後
+  S.exporting = true;
   setBusy(true, '画像を書き出し中…');
   await tick();
   try {
@@ -587,7 +640,7 @@ async function onSave() {
   } catch (e) {
     console.error(e);
     toast('書き出しに失敗しました（モザイクを適用できなかった場合は、安全のため保存しません）。他のアプリを閉じて再試行してください。', 7000);
-  } finally { setBusy(false); }
+  } finally { S.exporting = false; setBusy(false); }
 }
 
 function resultFile() { return new File([S.resultBlob], `${S.img.name}_mosaic.jpg`, { type: 'image/jpeg' }); }
@@ -595,9 +648,9 @@ function showResult(blob, applied) {
   closeResult();
   S.resultBlob = blob; S.resultUrl = URL.createObjectURL(blob);
   el.mImg.src = S.resultUrl; el.mOpen.href = S.resultUrl;
-  const total = S.faces.length;
+  const total = S.faces.length + S.manual.length;
   const incomplete = S.detect.state !== 'done';
-  let note = `モザイクを ${applied} 件の顔に適用しました（検出 ${total} 件）。`;
+  let note = `モザイクを ${applied} 件に適用しました（自動検出 ${mosaicFaces().length} 件＋手動 ${S.manual.length} 件）。`;
   let warn = false;
   if (incomplete) { note = `顔の検出が完了していません。${note}`; warn = true; }
   else if (total === 0) { note = '顔が検出されなかったため、モザイクは適用されていません。写真をよく確認してください。'; warn = true; }
@@ -645,6 +698,7 @@ el.settingsBtn.addEventListener('click', () => {
 });
 el.redetect.addEventListener('click', () => { if (S.img) runDetection(); });
 el.reset.addEventListener('click', resetAll);
+el.clearManual.addEventListener('click', clearManual);
 el.undo.addEventListener('click', undo);
 el.save.addEventListener('click', onSave);
 $('#z-in').addEventListener('click', () => zoomBy(1.5));
@@ -677,6 +731,7 @@ document.addEventListener('keydown', (e) => {
   else if (!mod && e.key === '1') setTool('rect');
   else if (!mod && e.key === '2') setTool('lasso');
   else if (!mod && e.key === '3') toggleOriginal();
+  else if (!mod && e.key === '4') setTool('manual');
 });
 document.addEventListener('keyup', (e) => { if (e.key === ' ') { S.spaceDown = false; updateCursor(); } });
 window.addEventListener('blur', () => { S.spaceDown = false; updateCursor(); });
@@ -685,6 +740,7 @@ document.addEventListener('gesturestart', (e) => e.preventDefault());   // iOS: 
 new ResizeObserver(() => resizeCanvas()).observe(el.stage);
 window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 250));
 
+el.ver.textContent = `v${APP_VERSION}`;
 syncToolbar(false);
 
 /* ---------- オフライン対応（PWA） ---------- */
@@ -693,6 +749,6 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 }
 
 // テスト用フック（手元の環境で ?debug を付けた時だけ公開。公開サイトでは無効）
-if (DEBUG) window.__fm = { S, loadFile, runDetection, isMosaic, getCells };
+if (DEBUG) window.__fm = { S, loadFile, runDetection, isMosaic, getCells, APP_VERSION };
 
 document.documentElement.setAttribute('data-ready', '1');   // guard.js への「起動できた」合図

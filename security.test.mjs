@@ -92,3 +92,20 @@ test('Service Worker: 同一オリジンの正常応答のみ保存、skipWaitin
   assert.ok(/req\.mode\s*===\s*'navigate'/.test(s));
   assert.ok(/req\.cache\s*===\s*'reload'/.test(s), '取り直し要求（自己修復）に対応');
 });
+
+test('リリース整合: package.json / app.js / sw.js / CHANGELOG のバージョンが一致', () => {
+  const v = JSON.parse(read('package.json')).version;
+  assert.match(v, /^\d+\.\d+\.\d+$/);
+  assert.ok(read('app.js').includes(`const APP_VERSION = '${v}'`), 'app.js の APP_VERSION');
+  assert.ok(read('sw.js').includes(`const VERSION = 'fm-${v}'`), 'sw.js の VERSION（古いキャッシュを確実に捨てるため）');
+  assert.ok(read('CHANGELOG.md').includes(`## ${v}`), 'CHANGELOG に当該バージョンの項目');
+});
+
+test('手動モザイク: 件数上限・入力検証・安全側の書き出し・二重実行防止が実装されている', () => {
+  const a = read('app.js');
+  assert.ok(/G\.MAX_MANUAL/.test(a) && /G\.normalizeRect\(/.test(a) && /G\.hitRect\(/.test(a), '上限・正規化・当たり判定を使用');
+  assert.ok(/mosaicTargets\(\)/.test(a.slice(a.indexOf('async function exportBlob'))), '書き出しは手動枠も対象');
+  assert.ok(/if \(!S\.img \|\| S\.exporting\) return;/.test(a) && /S\.exporting = false/.test(a), '保存の二重実行防止');
+  assert.ok(/el\.layout\.inert = on/.test(a), '処理中は編集操作をロック');
+  assert.ok(/mosaic not applied/.test(a), '適用できなければ書き出しを中断（fail-closed）');
+});

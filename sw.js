@@ -1,5 +1,5 @@
 // オフライン対応用 Service Worker。ファイルを更新したら VERSION を上げる。
-const VERSION = 'fm-v4';
+const VERSION = 'fm-1.2.0';
 const CORE = ['./', 'index.html', 'style.css', 'app.css', 'app.js', 'geometry.js', 'imageinfo.js', 'integrity.js', 'guard.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 const HEAVY = ['face-api.js', 'ssd_mobilenetv1_model-weights_manifest.json', 'ssd_mobilenetv1_model.bin'];
 const isHeavy = (url) => HEAVY.some((f) => url.endsWith('/' + f));
