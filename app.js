@@ -23,24 +23,24 @@ const MAX_SOURCE_PIXELS = 120e6;            // デコード前に弾く上限（
 const MAX_PIXELS = 16e6;                    // 処理用に縮小する上限（iOS Safari の canvas 上限を下回る）
 const MAX_SIDE = 8192;
 const MIN_CONF = 0.45;                      // 見逃しを避けるため低め
-const KEEP_THRESHOLD = 0.5;                 // 顔枠の50%以上が「残す範囲」に入っていれば残す
+const KEEP_THRESHOLD = 0.5;                 // 領域指定との互換用
 const PREVIEW_SIDE = 1600;
 const PARAMS = new URLSearchParams(location.search);
 const LOCAL = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) || location.protocol === 'file:';
 const DEBUG = PARAMS.has('debug') && LOCAL;   // テスト用フックは、手元の環境で ?debug を付けた時だけ
 
 const TOOL_HINTS = {
-  rect: '残したい人を四角で囲みます（複数可）。囲んだ外の顔にモザイクがかかります。',
-  lasso: '残したい人を指でなぞって囲みます。離すと自動で閉じます（複数可）。',
-  manual: '検出されなかった顔を四角で囲むとモザイクを追加（何個でも）。枠をタップで削除。'
+  toggle: 'モザイクを消したい（残したい）人の顔をタップするとモザイクが外れます（もう一度タップで戻ります）。ドラッグで画面を移動できます。',
+  manual: '自動で見つからなかった顔をドラッグで囲むとモザイクを追加できます（何個でも）。追加した枠をタップすると削除します。'
 };
-const HINT_ORIGINAL = '元の画像を表示中です。四角・手描きを押すと編集に戻ります。保存するとモザイクが適用されます。';
+const HINT_ORIGINAL = '元の画像を表示中です（ドラッグで移動）。もう一度「元画像を見る」を押すか、他のボタンを押すと編集に戻ります。保存時はモザイクが適用されます。';
 
 const el = {
   app: $('#app'), layout: $('.layout'), clearManual: $('#btn-clear-manual'), oManual: $('#o-manual'), ver: $('#ver'), stage: $('#stage'), cv: $('#cv'), chip: $('#chip'), zoom: $('#zoom'), toast: $('#toast'),
   busy: $('#busy'), busyText: $('#busy-text'), hint: $('#hint'), settings: $('#settings'), boot: $('#boot-error'),
   file: $('#file'), fileZone: $('#file-zone'), undo: $('#undo'), save: $('#save'), reset: $('#btn-reset'), redetect: $('#btn-redetect'),
   original: $('#btn-original'), info: $('#info'), settingsBtn: $('#btn-settings'),
+  step1: $('#step-1'), step2: $('#step-2'), step3: $('#step-3'),
   modal: $('#modal'), mOpen: $('#m-open'), mImg: $('#m-img'), mNote: $('#m-note'), mShare: $('#m-share'), mDownload: $('#m-download'), mClose: $('#m-close')
 };
 const ctx = el.cv.getContext('2d');
@@ -51,7 +51,7 @@ const S = {
   regions: [], faces: [], raw: [], history: [],
   manual: [],           // 手動で追加したモザイク枠 { x, y, w, h, manual:true, auto:'mosaic' }（画像座標・整数）
   exporting: false,
-  tool: 'rect', showOriginal: false,
+  tool: 'toggle', showOriginal: false,
   params: { cells: 7, margin: 1.6, detail: 'standard' },
   detect: { state: 'idle', progress: 0, run: 0 },
   cssW: 0, cssH: 0, dpr: 1, loadSeq: 0,
@@ -102,7 +102,7 @@ async function decodeImage(file) {
     im.decoding = 'async'; im.src = url;
     await im.decode();
     return im;
-  } finally { setTimeout(() => URL.revokeObjectURL(url), 30000); }
+  } finally { URL.revokeObjectURL(url); }
 }
 
 async function loadFile(file) {
@@ -146,9 +146,10 @@ async function loadFile(file) {
     el.zoom.hidden = false;
     closeResult();
     resizeCanvas(); fitToScreen();
+    S.tool = 'toggle';
     syncToolbar(false);
     updateUI();
-    if (!S.seenZoomTip) { S.seenZoomTip = true; toast('2本指（ホイール）で拡大・移動できます', 3500); }
+    if (!S.seenZoomTip) { S.seenZoomTip = true; toast('消したいモザイクの顔をタップで切り替え／ドラッグで移動できます', 4000); }
     el.info.textContent = `${nw}×${nh}px` + (scaled ? ` → ${w}×${h}pxに縮小して処理` : '');
     runDetection();
   } catch (e) {
@@ -223,6 +224,7 @@ async function runDetection() {
   const img = S.img; if (!img) return;
   const run = ++S.detect.run;
   const alive = () => run === S.detect.run && S.img === img;
+  const prevFaces = S.faces.slice();
   S.raw = [];
   S.detect.state = 'loading'; S.detect.progress = 0; updateUI();
   try { await ensureEngine(); }
@@ -232,7 +234,7 @@ async function runDetection() {
     S.detect.state = 'error'; updateUI();
     toast(e instanceof IntegrityError
       ? '検出に使うファイルが壊れているか、差し替えられています。ページを再読み込みしてください。直らない場合は配布元をご確認ください。'
-      : '顔検出エンジンを読み込めませんでした。通信状況を確認し、「この設定で再検出」をお試しください。', 7000);
+      : '顔検出エンジンを読み込めませんでした。通信状況を確認し、「もう一度検出する」をお試しください。', 7000);
     return;
   }
   if (!alive()) return;
@@ -267,31 +269,35 @@ async function runDetection() {
         updateUI();
         await tick();
       }
-      applyDetections();
+      applyDetections(prevFaces);
     }
   } catch (e) {
     console.error(e);
     if (!alive()) return;
     S.detect.state = 'error'; updateUI();
-    toast('顔の検出中にエラーが発生しました。もう一度「この設定で再検出」をお試しください。', 6000);
+    toast('顔の検出中にエラーが発生しました。もう一度お試しください。', 6000);
     return;
   }
   if (!alive()) return;
   S.detect.state = 'done'; updateUI();
   if (S.params.detail === 'standard' && Math.max(img.W, img.H) >= 2400 && !S.seenDetailTip) {
     S.seenDetailTip = true;
-    toast('遠くの小さな顔は「設定」→「高精度」で再検出すると見つかる場合があります。', 6000);
+    toast('遠くの小さな顔は「設定」→「高精度」に切り替えると見つかる場合があります。', 5500);
   }
 }
 
-function applyDetections() {
-  S.faces = G.mergeBoxes(S.raw).map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, score: b.score, auto: 'mosaic' }));
+function applyDetections(prevFaces = []) {
+  const merged = G.mergeBoxes(S.raw).map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, score: b.score, override: null, auto: 'mosaic' }));
+  S.faces = G.carryOverrides(prevFaces, merged);
   reclassify();
 }
 
 /* ---------- 「残す／モザイク」の判定（既定は「モザイク」＝安全側） ---------- */
 function reclassify() {
-  for (const f of S.faces) f.auto = G.coverage(f, S.regions) >= KEEP_THRESHOLD ? 'keep' : 'mosaic';
+  for (const f of S.faces) {
+    if (f.override === 'keep' || f.override === 'mosaic') f.auto = f.override;
+    else f.auto = G.coverage(f, S.regions) >= KEEP_THRESHOLD ? 'keep' : 'mosaic';
+  }
   updateUI(); requestRender();
 }
 
@@ -356,32 +362,39 @@ function render() {
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
   const usePreview = W * s * S.dpr <= preview.width * 1.25;
   ctx.drawImage(usePreview ? preview : source, tx, ty, W * s, H * s);
-  if (S.showOriginal) return;                 // 「モザイクなし」：元の画像だけを表示
+  if (S.showOriginal) return;                 // 「元画像を見る」：元の画像だけを表示
 
   // モザイクのプレビュー（書き出しと同じ格子）
   for (const f of mosaicTargets()) { const c = getCells(f); if (c) drawCells(ctx, c, s, tx, ty); }
 
   const keep = cssVar('--keep') || '#1f9d55', mos = cssVar('--mosaic') || '#d6246e';
   ctx.lineJoin = 'round';
-  const polys = S.regions.slice();
-  const d = S.drawing;
-  if (d && d.pts.length > 1 && d.type !== 'manual') polys.push(d.type === 'rect' ? G.rectPoly(d.pts[0], d.pts[d.pts.length - 1]) : d.pts);
-  for (const p of polys) {
-    ctx.beginPath();
-    p.forEach((q, i) => (i ? ctx.lineTo(q.x * s + tx, q.y * s + ty) : ctx.moveTo(q.x * s + tx, q.y * s + ty)));
-    ctx.closePath();
-    ctx.fillStyle = hexA(keep, 0.16); ctx.fill();
-    ctx.lineWidth = 2; ctx.setLineDash([7, 5]); ctx.strokeStyle = keep; ctx.stroke(); ctx.setLineDash([]);
-  }
   for (const f of S.faces) {
     const k = f.auto === 'keep';
-    ctx.lineWidth = 2; ctx.strokeStyle = k ? keep : mos; ctx.setLineDash(k ? [] : [5, 3]);
-    ctx.strokeRect(f.x * s + tx, f.y * s + ty, f.w * s, f.h * s);
+    const fx = f.x * s + tx, fy = f.y * s + ty, fw = f.w * s, fh = f.h * s;
+    ctx.lineWidth = k ? 2.5 : 2;
+    ctx.strokeStyle = k ? keep : mos;
+    ctx.setLineDash(k ? [] : [5, 3]);
+    ctx.strokeRect(fx, fy, fw, fh);
     ctx.setLineDash([]);
+    if (k && fw >= 26 && fh >= 26) {
+      ctx.fillStyle = keep;
+      ctx.beginPath();
+      ctx.arc(fx + 10, fy + 10, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(fx + 6.5, fy + 10);
+      ctx.lineTo(fx + 9.2, fy + 12.8);
+      ctx.lineTo(fx + 13.8, fy + 7.5);
+      ctx.stroke();
+    }
   }
   // 手動で追加した枠（実線・太め）と、ドラッグ中の枠
   ctx.lineWidth = 3; ctx.strokeStyle = mos;
   for (const m of S.manual) ctx.strokeRect(m.x * s + tx, m.y * s + ty, m.w * s, m.h * s);
+  const d = S.drawing;
   if (d && d.type === 'manual' && d.pts.length > 1) {
     const a = d.pts[0], b = d.pts[d.pts.length - 1];
     const x = Math.min(a.x, b.x) * s + tx, y = Math.min(a.y, b.y) * s + ty, w = Math.abs(a.x - b.x) * s, h = Math.abs(a.y - b.y) * s;
@@ -423,11 +436,21 @@ function zoomBy(factor, cx = S.cssW / 2, cy = S.cssH / 2) {
 /* ---------- 入力（マウス・タッチ・ペン共通） ---------- */
 const local = (e) => { const r = el.cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
 const imgPt = (p) => G.toImage(S.view, p.x, p.y);
-const panMode = () => S.showOriginal || S.spaceDown;   // 元画像表示中は、1本指/ドラッグで移動
+const panMode = () => S.showOriginal || S.spaceDown;
 
 function updateCursor() {
-  el.cv.style.cursor = panMode() ? (S.gesture && S.gesture.type === 'pan' ? 'grabbing' : 'grab') : 'crosshair';
+  const isManual = !S.showOriginal && S.tool === 'manual' && !S.spaceDown;
+  const isPanning = S.gesture && (S.gesture.type === 'pan' || (S.gesture.type === 'toggle' && S.gesture.moved));
+  el.stage.classList.toggle('mode-manual', isManual);
+  el.stage.classList.toggle('mode-pan', panMode());
+  el.stage.classList.toggle('is-panning', !!isPanning);
+  el.cv.style.cursor = isManual ? 'crosshair' : isPanning ? 'grabbing' : panMode() ? 'grab' : 'pointer';
 }
+
+// 写真未選択時にステージをクリックしたらファイル選択を開く
+el.stage.addEventListener('click', (e) => {
+  if (!S.img && e.target === el.stage) el.file.click();
+});
 
 el.cv.addEventListener('pointerdown', (e) => {
   if (!S.img) return;
@@ -438,6 +461,12 @@ el.cv.addEventListener('pointerdown', (e) => {
   S.pointers.set(e.pointerId, p);
   if (S.pointers.size >= 2) { startPinch(); return; }
   if (e.button === 1 || panMode()) { S.gesture = { type: 'pan', last: p }; updateCursor(); return; }
+  if (S.tool === 'toggle') {
+    // A案: タップなら顔のモザイクON/OFF切り替え、ドラッグなら画面移動
+    S.gesture = { type: 'toggle', start: p, last: p, moved: false };
+    updateCursor();
+    return;
+  }
   S.drawing = { type: S.tool, pts: [imgPt(p)], start: p };
   S.gesture = { type: 'draw' };
 });
@@ -449,17 +478,26 @@ el.cv.addEventListener('pointermove', (e) => {
   S.pointers.set(e.pointerId, p);
   const g = S.gesture; if (!g) return;
   if (g.type === 'pinch') { updatePinch(); return; }
+  if (g.type === 'toggle') {
+    if (!g.moved && Math.hypot(p.x - g.start.x, p.y - g.start.y) >= 10) {
+      g.moved = true;
+      updateCursor();
+    }
+    if (g.moved) {
+      S.fitted = false;
+      S.view = G.clampView({ ...S.view, tx: S.view.tx + p.x - g.last.x, ty: S.view.ty + p.y - g.last.y }, S.img.W, S.img.H, S.cssW, S.cssH);
+      g.last = p;
+      requestRender();
+    }
+    return;
+  }
   if (g.type === 'pan') {
     S.fitted = false;
     S.view = G.clampView({ ...S.view, tx: S.view.tx + p.x - g.last.x, ty: S.view.ty + p.y - g.last.y }, S.img.W, S.img.H, S.cssW, S.cssH);
     g.last = p; requestRender(); return;
   }
   if (g.type === 'draw' && S.drawing) {
-    const d = S.drawing, q = imgPt(p);
-    if (d.type === 'lasso') {
-      const last = d.pts[d.pts.length - 1];
-      if (Math.hypot((q.x - last.x) * S.view.s, (q.y - last.y) * S.view.s) >= 3) d.pts.push(q);
-    } else d.pts[1] = q;
+    S.drawing.pts[1] = imgPt(p);
     requestRender();
   }
 });
@@ -479,7 +517,12 @@ function endPointer(e, cancelled) {
   if (!g) return;
   S.gesture = null;
   if (g.type === 'pan') { updateCursor(); return; }
-  if (cancelled) { S.drawing = null; requestRender(); return; }
+  if (cancelled) { S.drawing = null; updateCursor(); requestRender(); return; }
+  if (g.type === 'toggle') {
+    updateCursor();
+    if (!g.moved) toggleFaceAt(g.start || p);
+    return;
+  }
   if (g.type === 'draw') finishDrawing(p);
 }
 el.cv.addEventListener('pointerup', (e) => endPointer(e, false));
@@ -515,19 +558,40 @@ el.cv.addEventListener('wheel', (e) => {
   zoomBy(Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)), p.x, p.y);
 }, { passive: false });
 
+/* ---------- 顔タップでモザイク ON / OFF 切り替え（A案） ---------- */
+function toggleFaceAt(pt) {
+  // 手動追加された枠に当たった場合は削除
+  const mi = G.hitRect(S.manual, pt, S.view);
+  const fi = G.hitRect(S.faces, pt, S.view);
+  if (mi >= 0 && (fi < 0 || S.manual[mi].w * S.manual[mi].h <= S.faces[fi].w * S.faces[fi].h)) {
+    const [box] = S.manual.splice(mi, 1);
+    pushHistory(() => { S.manual.splice(Math.min(mi, S.manual.length), 0, box); refresh(); });
+    toast('手動モザイクの枠を削除しました（「戻す」で復元できます）。');
+    refresh();
+    return;
+  }
+  if (fi >= 0) {
+    const f = S.faces[fi];
+    const prev = f.override;
+    const next = isMosaic(f) ? 'keep' : 'mosaic';
+    f.override = next;
+    pushHistory(() => { f.override = prev; reclassify(); });
+    reclassify();
+    toast(next === 'keep' ? 'モザイクを消しました（もう一度タップで戻せます）。' : 'モザイクをかけました。', 2200);
+    return;
+  }
+  if (!S.faces.length && !S.manual.length) {
+    toast('検出された顔がありません。隠したい顔は「モザイクを手動追加」で囲んでください。');
+  } else {
+    toast('モザイクを消したい（または戻したい）顔の枠をタップしてください。');
+  }
+}
+
 function finishDrawing(endP) {
   const d = S.drawing; S.drawing = null;
   if (!d) { requestRender(); return; }
-  const minPx = 14;
   if (d.type === 'manual') { finishManual(d, endP); return; }
-  const pts = d.type === 'rect' ? [d.pts[0], d.pts[1] || imgPt(endP)] : d.pts;
-  const bb = G.bboxOf(pts);
-  const tooSmall = !Number.isFinite(bb.w + bb.h) || bb.w * S.view.s < minPx || bb.h * S.view.s < minPx || (d.type === 'lasso' && pts.length < 3);
-  if (tooSmall) { toast(d.type === 'rect' ? 'ドラッグして範囲を囲んでください。' : '囲みが小さすぎます。もう少し大きくなぞってください。'); requestRender(); return; }
-  const poly = d.type === 'rect' ? G.rectPoly(pts[0], pts[1]) : pts;
-  S.regions.push(poly);
-  pushHistory(() => { S.regions = S.regions.filter((r) => r !== poly); reclassify(); });
-  reclassify();
+  requestRender();
 }
 
 /* ---------- 手動モザイク（検出漏れの顔を、任意の数だけ追加） ---------- */
@@ -535,13 +599,22 @@ function finishManual(d, endP) {
   const a = d.pts[0], b = d.pts[1] || imgPt(endP);
   const bb = G.bboxOf([a, b]);
   const tap = !Number.isFinite(bb.w + bb.h) || bb.w * S.view.s < 14 || bb.h * S.view.s < 14;
-  if (tap) {                                         // ほぼ動かさずに離した＝タップ：既存の枠を削除
-    const i = G.hitRect(S.manual, d.start || endP, S.view);
-    if (i < 0) { toast('ドラッグで、モザイクをかけたい顔を囲んでください。'); requestRender(); return; }
-    const [box] = S.manual.splice(i, 1);
-    pushHistory(() => { S.manual.splice(Math.min(i, S.manual.length), 0, box); refresh(); });
-    toast('手動の枠を削除しました（「戻す」で復元できます）。');
-    refresh(); return;
+  if (tap) {                                         // ほぼ動かさずに離した＝タップ：既存の枠を削除、または自動検出顔の切り替え
+    const pt = d.start || endP;
+    const i = G.hitRect(S.manual, pt, S.view);
+    if (i >= 0) {
+      const [box] = S.manual.splice(i, 1);
+      pushHistory(() => { S.manual.splice(Math.min(i, S.manual.length), 0, box); refresh(); });
+      toast('手動の枠を削除しました（「戻す」で復元できます）。');
+      refresh(); return;
+    }
+    const fi = G.hitRect(S.faces, pt, S.view);
+    if (fi >= 0) {
+      toggleFaceAt(pt);
+      return;
+    }
+    toast('ドラッグで、モザイクをかけたい顔を囲んでください。');
+    requestRender(); return;
   }
   if (S.manual.length >= G.MAX_MANUAL) { toast(`手動で追加できるのは${G.MAX_MANUAL}件までです。`); requestRender(); return; }
   const r = G.normalizeRect(a, b, S.img.W, S.img.H, 8);   // 写真内に収め、整数化。不正値・極小・写真の外は却下
@@ -565,9 +638,19 @@ const refresh = () => { updateUI(); requestRender(); };
 function pushHistory(undoFn) { S.history.push(undoFn); if (S.history.length > 200) S.history.shift(); }
 function undo() { const u = S.history.pop(); if (u) u(); updateUI(); }
 function resetAll() {
-  if (!S.regions.length) return;
-  if (!confirm('指定した「残す範囲」を全て消します。よろしいですか？')) return;
-  S.regions = []; S.history = []; reclassify();
+  const keptFaces = S.faces.filter((f) => !isMosaic(f));
+  if (!keptFaces.length && !S.regions.length) return;
+  if (!confirm('モザイクを消した顔をすべて「モザイクあり」に戻します。よろしいですか？（「戻す」で復元できます）')) return;
+  const prevOverrides = S.faces.map((f) => ({ f, ov: f.override }));
+  const prevRegions = S.regions;
+  for (const f of S.faces) f.override = null;
+  S.regions = [];
+  pushHistory(() => {
+    for (const item of prevOverrides) item.f.override = item.ov;
+    S.regions = prevRegions;
+    reclassify();
+  });
+  reclassify();
 }
 
 /* ---------- ツールバー・状態表示 ---------- */
@@ -584,13 +667,19 @@ const toggleOriginal = () => { if (S.img) syncToolbar(!S.showOriginal); };
 function setChip(text, warn = false) { el.chip.textContent = text; el.chip.hidden = !text; el.chip.classList.toggle('warn', warn); }
 function updateUI() {
   const has = !!S.img;
-  const n = S.faces.length, m = mosaicFaces().length;
+  const n = S.faces.length, m = mosaicFaces().length, kept = n - m;
   const st = S.detect.state;
+  const modalOpen = !el.modal.hidden;
+  if (el.step1 && el.step2 && el.step3) {
+    el.step1.classList.toggle('is-active', !has);
+    el.step2.classList.toggle('is-active', has && !modalOpen);
+    el.step3.classList.toggle('is-active', has && modalOpen);
+  }
   el.undo.disabled = !S.history.length;
   el.save.disabled = !has || st === 'loading';
   el.original.disabled = !has;
   el.redetect.disabled = !has || st === 'loading' || st === 'running';
-  el.reset.disabled = !has || !S.regions.length;
+  el.reset.disabled = !has || (kept === 0 && !S.regions.length);
   el.clearManual.disabled = !has || !S.manual.length;
   el.oManual.textContent = `${S.manual.length}件`;
   if (!has) { setChip(''); return; }
@@ -598,8 +687,8 @@ function updateUI() {
   if (st === 'running') setChip(`顔を検出中… ${Math.round(S.detect.progress * 100)}%｜現在 ${n}件（モザイク ${m}）`);
   else if (st === 'loading') setChip('顔検出エンジンを準備中…（初回のみ数秒）');
   else if (st === 'error') setChip('顔の検出に失敗しました（設定から再検出できます）', true);
-  else if (n || S.manual.length) setChip(`顔 ${n}件｜モザイク ${m}｜残す ${n - m}` + (S.manual.length ? `｜手動 ${S.manual.length}` : ''));
-  else setChip('顔は検出されませんでした（見落としがないか確認し、「手動追加」で補えます）');
+  else if (n || S.manual.length) setChip(`自動検出 ${n}件（モザイク ${m}／残す ${kept}）` + (S.manual.length ? `＋手動 ${S.manual.length}件` : ''));
+  else setChip('顔は検出されませんでした（見落としは「モザイクを手動追加」で囲めます）');
 }
 
 /* ---------- 書き出し・共有（安全側：モザイクを適用できなければ書き出さない） ---------- */
@@ -659,12 +748,20 @@ function showResult(blob, applied) {
   el.mShare.hidden = !canShare;
   el.mDownload.classList.toggle('primary', !canShare);
   el.modal.hidden = false;
+  if ('inert' in el.app) el.app.inert = true;
+  updateUI();
   (canShare ? el.mShare : el.mDownload).focus();
 }
 function closeResult() {
+  const wasOpen = !el.modal.hidden;
   el.modal.hidden = true;
+  if ('inert' in el.app) el.app.inert = false;
   if (S.resultUrl) URL.revokeObjectURL(S.resultUrl);
   S.resultUrl = null; S.resultBlob = null; el.mImg.removeAttribute('src'); el.mOpen.removeAttribute('href');
+  if (wasOpen) {
+    updateUI();
+    if (el.save && !el.save.disabled) el.save.focus();
+  }
 }
 el.mDownload.addEventListener('click', () => {
   if (!S.resultBlob) return;
@@ -684,9 +781,14 @@ window.addEventListener('pagehide', closeResult);
 document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
 el.original.addEventListener('click', toggleOriginal);
 document.querySelectorAll('[data-detail]').forEach((b) => b.addEventListener('click', () => {
-  S.params.detail = b.dataset.detail;
+  const next = b.dataset.detail;
+  const changed = S.params.detail !== next;
+  S.params.detail = next;
   document.querySelectorAll('[data-detail]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-  if (S.img) toast('「この設定で再検出」を押すと反映されます。');
+  if (S.img && changed) {
+    toast(next === 'high' ? '高精度で再検出しています…' : '標準設定で再検出しています…');
+    runDetection();
+  }
 }));
 $('#r-cells').addEventListener('input', (e) => { S.params.cells = +e.target.value; $('#o-cells').textContent = `${S.params.cells}分割`; requestRender(); });
 $('#r-margin').addEventListener('input', (e) => { S.params.margin = +e.target.value; $('#o-margin').textContent = `×${S.params.margin.toFixed(1)}`; requestRender(); });
@@ -728,10 +830,9 @@ document.addEventListener('keydown', (e) => {
   else if (!mod && (e.key === '+' || e.key === '=')) zoomBy(1.4);
   else if (!mod && (e.key === '-' || e.key === '_')) zoomBy(1 / 1.4);
   else if (!mod && e.key === '0') fitToScreen();
-  else if (!mod && e.key === '1') setTool('rect');
-  else if (!mod && e.key === '2') setTool('lasso');
+  else if (!mod && e.key === '1') setTool('toggle');
+  else if (!mod && e.key === '2') setTool('manual');
   else if (!mod && e.key === '3') toggleOriginal();
-  else if (!mod && e.key === '4') setTool('manual');
 });
 document.addEventListener('keyup', (e) => { if (e.key === ' ') { S.spaceDown = false; updateCursor(); } });
 window.addEventListener('blur', () => { S.spaceDown = false; updateCursor(); });

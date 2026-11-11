@@ -5,8 +5,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#697b43">
-<meta name="description" content="残したい範囲以外に写り込んだ顔を自動でモザイクにする、端末内で完結する写真ツール">
+<meta name="theme-color" content="#b85652">
+<meta name="description" content="写り込んだ顔を自動でモザイクにし、残したい人の顔はタップで簡単に切り替えられる、端末内で完結する写真ツール">
 <title>写り込み顔モザイク</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -25,7 +25,7 @@
       <div class="mark" aria-hidden="true">▦</div>
       <div>
         <h1>写り込み顔モザイク</h1>
-        <p>残したい人以外の顔を、自動でモザイクにします</p>
+        <p>検出した顔に自動でモザイク。消したい顔はタップで切り替え</p>
       </div>
     </div>
     <div class="header-actions">
@@ -36,10 +36,16 @@
 
   <p class="status error" id="boot-error" role="alert" hidden></p>
 
-  <div class="steps" aria-label="手順">
-    <span class="step">① 写真を選ぶ</span>
-    <span class="step">② 残したい人を囲む</span>
-    <span class="step">③ 保存して確認</span>
+  <div class="guide-bar">
+    <div class="steps" aria-label="手順">
+      <span class="step is-active" id="step-1">① 写真を選ぶ</span>
+      <span class="step" id="step-2">② 消したい顔をタップ（全員隠すならそのまま③へ）</span>
+      <span class="step" id="step-3">③ 保存して確認</span>
+    </div>
+    <div class="legend" aria-label="枠の色">
+      <span class="legend-item"><i class="swatch mosaic" aria-hidden="true"></i>モザイクあり</span>
+      <span class="legend-item"><i class="swatch keep" aria-hidden="true"></i>モザイクなし（残す）</span>
+    </div>
   </div>
 
   <main class="layout">
@@ -56,7 +62,7 @@
         <canvas id="cv" aria-label="写真の編集画面"></canvas>
         <div class="empty" id="empty">
           <strong>まだ写真がありません</strong>
-          写真を選ぶと、写っている顔を自動で検出します。
+          ここをタップして写真を選ぶと、写っている顔を自動でモザイクにします。
         </div>
         <div class="chip" id="chip" role="status" aria-live="polite" hidden></div>
         <div class="zoom" id="zoom" hidden>
@@ -71,23 +77,19 @@
 
     <section class="panel quickbar" aria-label="操作">
       <div class="field">
-        <span class="field-title" id="t-tool">ツール</span>
+        <span class="field-title" id="t-tool">操作モード</span>
         <div class="choice-row tool-row" role="group" aria-labelledby="t-tool">
-          <button type="button" data-tool="rect" aria-pressed="true" aria-label="残す範囲を四角で指定">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="13" rx="2" stroke-dasharray="3.2 2.6"/></svg>
-            <span>四角</span>
-          </button>
-          <button type="button" data-tool="lasso" aria-pressed="false" aria-label="残す範囲を手描きで指定">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5c5 0 8 1.8 8 4.8s-3.8 5-8 5-8-2-8-5 3-4.8 8-4.8z" stroke-dasharray="3.2 2.6"/><path d="M8.5 14c0 3-1.2 4.5-3.5 5.5"/></svg>
-            <span>手描き</span>
+          <button type="button" data-tool="toggle" aria-pressed="true" aria-label="顔をタップしてモザイクを消す・戻す（ドラッグで画面移動）">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M8.5 12.5l2.5 2.5 4.8-5"/></svg>
+            <span>モザイクを<br class="sp-br">消す／戻す</span>
           </button>
           <button type="button" data-tool="manual" aria-pressed="false" aria-label="検出されなかった顔を四角で囲んで、手動でモザイクを追加">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="12.5" height="12.5" rx="2" stroke-dasharray="3.2 2.6"/><path d="M18.5 13v7M15 16.5h7"/></svg>
-            <span>手動追加</span>
+            <span>モザイクを<br class="sp-br">手動追加</span>
           </button>
-          <button type="button" id="btn-original" aria-pressed="false" aria-label="全ての顔のモザイクを外して元の画像を表示（もう一度押すとモザイク表示に戻る）" disabled>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><path d="M9.2 10.5h.01M14.8 10.5h.01M9.2 14.2c1.7 1.4 4 1.4 5.6 0"/><path d="M5 19L19 5"/></svg>
-            <span>モザイク<br class="sp-br">なし</span>
+          <button type="button" id="btn-original" aria-pressed="false" aria-label="全ての顔のモザイクを一時的に隠して元の画像を確認（もう一度押すとモザイク表示に戻る）" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>元画像を<br class="sp-br">見る</span>
           </button>
         </div>
         <p class="hint" id="hint"></p>
@@ -101,32 +103,32 @@
     <aside class="panel settings" id="settings" aria-labelledby="h-settings">
       <div class="panel-head">
         <h2 id="h-settings">設定</h2>
-        <button type="button" id="btn-reset" class="subtle" disabled>範囲を全消去</button>
+        <button type="button" id="btn-reset" class="subtle" disabled>全員モザイクに戻す</button>
       </div>
       <div class="controls">
         <div class="field">
-          <div class="field-header"><label for="r-cells">モザイクの粗さ</label><output class="badge" id="o-cells" for="r-cells"></output></div>
-          <input type="range" id="r-cells" min="4" max="14" step="1" value="7">
-          <small>左ほど粗く、右ほど細かくなります。</small>
+          <div class="field-header"><label for="r-cells">モザイクの細かさ</label><output class="badge" id="o-cells" for="r-cells"></output></div>
+          <input type="range" id="r-cells" min="4" max="10" step="1" value="7">
+          <small>左ほど粗く強く隠れ、右ほど細かくなります。</small>
         </div>
         <div class="field">
-          <div class="field-header"><label for="r-margin">モザイクの範囲</label><output class="badge" id="o-margin" for="r-margin"></output></div>
+          <div class="field-header"><label for="r-margin">モザイクの広さ</label><output class="badge" id="o-margin" for="r-margin"></output></div>
           <input type="range" id="r-margin" min="1.2" max="2.2" step="0.1" value="1.6">
           <small>右ほど髪や耳まで広く隠します。</small>
         </div>
         <div class="field">
           <div class="field-header"><span class="field-title" id="t-manual">手動モザイク</span><output class="badge" id="o-manual" aria-live="polite">0件</output></div>
-          <small>自動で見つからなかった顔は、「手動追加」で囲むとモザイクをかけられます（何個でも）。追加した枠は、「手動追加」を選んでタップすると削除できます。</small>
+          <small>自動で見つからなかった顔は、「モザイクを手動追加」でドラッグして囲むと隠せます。追加した枠はタップで削除できます。</small>
           <div class="button-row"><button type="button" id="btn-clear-manual" class="subtle" aria-describedby="t-manual" disabled>手動の枠を全消去</button></div>
         </div>
         <div class="field">
-          <span class="field-title" id="t-detail">顔の検出</span>
+          <span class="field-title" id="t-detail">顔の検出精度</span>
           <div class="choice-row detail-row" role="group" aria-labelledby="t-detail">
             <button type="button" data-detail="standard" aria-pressed="true">標準（速い）</button>
-            <button type="button" data-detail="high" aria-pressed="false">高精度（遅い）</button>
+            <button type="button" data-detail="high" aria-pressed="false">高精度（小さい顔も探す）</button>
           </div>
-          <small>高精度は、遠くの小さい顔まで探します。</small>
-          <div class="button-row"><button type="button" id="btn-redetect" class="secondary" disabled>この設定で再検出</button></div>
+          <small>切り替えると自動で再検出します（消したモザイクの設定は引き継がれます）。</small>
+          <div class="button-row"><button type="button" id="btn-redetect" class="secondary" disabled>もう一度検出する</button></div>
         </div>
         <p class="meta" id="info"></p>
         <div class="privacy">写真はこの端末の中だけで処理され、外部へ送信されません。保存される画像に位置情報などの撮影情報（EXIF）は含まれません。</div>
@@ -142,7 +144,7 @@
     <h2 id="m-title">仕上がりの確認</h2>
     <div class="modal-img"><img id="m-img" alt="モザイク処理後の写真"></div>
     <p class="status" id="m-note"></p>
-    <p class="hint">顔が残っていないか確認してください。拡大するときは「原寸で開く」か、編集画面に戻って2本指（ホイール）で拡大します。元の写真は変更されません。</p>
+    <p class="hint">隠したい顔が残っていないか確認してください。拡大するときは「原寸で開く」か、編集画面に戻って確認できます。元の写真は変更されません。</p>
     <div class="modal-actions">
       <button type="button" id="m-share" class="primary" hidden>共有・写真に保存</button>
       <button type="button" id="m-download" class="primary">ダウンロード</button>
