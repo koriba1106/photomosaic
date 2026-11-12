@@ -3,11 +3,12 @@ import { sniffImage } from './imageinfo.js';
 import { SCRIPT_SRI, verifyAsset, refreshFile, IntegrityError } from './integrity.js';
 
 /* =====================================================================
-   写り込み顔モザイク
+   写り込み顔・ナンバーモザイク
    - 画像は端末内でのみ処理（外部送信なし。CSP でも通信を遮断）
    - 顔検出: face-api(SSD MobileNet v1) を同梱し、全体＋タイル分割で小さい顔まで検出
+   - ナンバープレート検出: 白・黄（軽）・緑（事業用）等のナンバープレートも端末内で自動検出
    - プレビューと書き出しは同じ「モザイク格子」を描画するため、見たままの結果になる
-   - 安全側（fail-closed）の設計: 判定できない顔は「モザイクをかける」側に倒し、
+   - 安全側（fail-closed）の設計: 判定できない対象は「モザイクをかける」側に倒し、
      モザイクを適用できなかった場合は、モザイクなしの画像を書き出さずに中断する
    ===================================================================== */
 
@@ -17,7 +18,7 @@ try { framed = window.top !== window.self; } catch { framed = true; }
 if (framed) throw new Error('framed');
 
 const $ = (s) => document.querySelector(s);
-const APP_VERSION = '1.2.0';                // package.json・sw.js と一致させる（テストで検査）
+const APP_VERSION = '1.3.0';                // package.json・sw.js と一致させる（テストで検査）
 const MAX_FILE_BYTES = 100 * 1024 * 1024;   // 入力ファイルの上限
 const MAX_SOURCE_PIXELS = 120e6;            // デコード前に弾く上限（画像爆弾対策）
 const MAX_PIXELS = 16e6;                    // 処理用に縮小する上限（iOS Safari の canvas 上限を下回る）
@@ -30,8 +31,8 @@ const LOCAL = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) ||
 const DEBUG = PARAMS.has('debug') && LOCAL;   // テスト用フックは、手元の環境で ?debug を付けた時だけ
 
 const TOOL_HINTS = {
-  toggle: 'モザイクを消したい（残したい）人の顔をタップするとモザイクが外れます（もう一度タップで戻ります）。ドラッグで画面を移動できます。',
-  manual: '自動で見つからなかった顔をドラッグで囲むとモザイクを追加できます（何個でも）。追加した枠をタップすると削除します。'
+  toggle: 'モザイクを消したい（残したい）顔やナンバーの枠をタップするとモザイクが外れます（もう一度タップで戻ります）。ドラッグで画面を移動できます。',
+  manual: '自動で見つからなかった顔やナンバーをドラッグで囲むとモザイクを追加できます（何個でも）。追加した枠をタップすると削除します。'
 };
 const HINT_ORIGINAL = '元の画像を表示中です（ドラッグで移動）。もう一度「元画像を見る」を押すか、他のボタンを押すと編集に戻ります。保存時はモザイクが適用されます。';
 
@@ -220,6 +221,27 @@ function detectionLevels(W, H, detail) {
 
 function cancelDetection() { S.detect.run++; if (S.detect.state === 'running' || S.detect.state === 'loading') S.detect.state = 'idle'; }
 
+function detectPlatesFromImage(img, work, wctx, detail) {
+  const maxSide = detail === 'high' ? 1800 : 1280;
+  const pk = Math.min(1, maxSide / Math.max(img.W, img.H));
+  const pw = Math.max(1, Math.round(img.W * pk)), ph = Math.max(1, Math.round(img.H * pk));
+  work.width = pw; work.height = ph;
+  wctx.imageSmoothingQuality = 'high';
+  wctx.drawImage(img.source, 0, 0, img.W, img.H, 0, 0, pw, ph);
+  const found = G.detectPlates(wctx.getImageData(0, 0, pw, ph), {
+    minScore: detail === 'high' ? 0.50 : 0.53,
+    maxScaleLevels: detail === 'high' ? 4 : 3
+  });
+  return found.map((p) => ({
+    x: Math.round(p.x / pk),
+    y: Math.round(p.y / pk),
+    w: Math.round(p.w / pk),
+    h: Math.round(p.h / pk),
+    score: p.score,
+    kind: 'plate'
+  }));
+}
+
 async function runDetection() {
   const img = S.img; if (!img) return;
   const run = ++S.detect.run;
@@ -227,6 +249,18 @@ async function runDetection() {
   const prevFaces = S.faces.slice();
   S.raw = [];
   S.detect.state = 'loading'; S.detect.progress = 0; updateUI();
+
+  const work = document.createElement('canvas');
+  const wctx = work.getContext('2d', { willReadFrequently: true });
+
+  // ナンバープレートは外部モデル不要のため即座に検出して反映（顔検出エンジン準備中でも先にモザイク適用）
+  try {
+    for (const p of detectPlatesFromImage(img, work, wctx, S.params.detail)) S.raw.push(p);
+    if (S.raw.length) applyDetections(prevFaces);
+  } catch (e) { console.warn('plate detect failed', e); }
+  await tick();
+  if (!alive()) return;
+
   try { await ensureEngine(); }
   catch (e) {
     console.error(e);
@@ -243,8 +277,6 @@ async function runDetection() {
   const total = levels.reduce((a, l) => a + (l.tiles ? l.tiles.length : 1), 0);
   let done = 0;
   S.detect.state = 'running';
-  const work = document.createElement('canvas');
-  const wctx = work.getContext('2d');
 
   try {
     for (const lv of levels) {
@@ -259,7 +291,7 @@ async function runDetection() {
         const found = await detectCanvas(work);
         if (!alive()) return;
         for (const d of found) {
-          const b = { x: t.x + d.x / t.k, y: t.y + d.y / t.k, w: d.w / t.k, h: d.h / t.k, score: d.score };
+          const b = { x: t.x + d.x / t.k, y: t.y + d.y / t.k, w: d.w / t.k, h: d.h / t.k, score: d.score, kind: 'face' };
           if (b.w < 10 || b.h < 10 || b.w / b.h > 2.2 || b.h / b.w > 2.2) continue;
           if (lv.kind === 'tiles' && G.touchesInnerEdge(b, t, img.W, img.H)) continue;
           S.raw.push(b);
@@ -282,13 +314,22 @@ async function runDetection() {
   S.detect.state = 'done'; updateUI();
   if (S.params.detail === 'standard' && Math.max(img.W, img.H) >= 2400 && !S.seenDetailTip) {
     S.seenDetailTip = true;
-    toast('遠くの小さな顔は「設定」→「高精度」に切り替えると見つかる場合があります。', 5500);
+    toast('遠くの小さな顔やナンバーは「設定」→「高精度」に切り替えると見つかる場合があります。', 5500);
   }
 }
 
 function applyDetections(prevFaces = []) {
-  const merged = G.mergeBoxes(S.raw).map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, score: b.score, override: null, auto: 'mosaic' }));
-  S.faces = G.carryOverrides(prevFaces, merged);
+  const rawFaces = S.raw.filter((b) => b.kind !== 'plate');
+  const rawPlates = S.raw.filter((b) => b.kind === 'plate');
+  const faces = G.mergeBoxes(rawFaces).map((b) => ({
+    x: b.x, y: b.y, w: b.w, h: b.h, score: b.score, kind: 'face', override: null, auto: 'mosaic'
+  }));
+  const plates = G.mergeBoxes(rawPlates, { iouThr: 0.3, containThr: 0.6 })
+    .filter((p) => !faces.some((f) => G.iou(p, f) > 0.15 || G.containment(p, f) > 0.25))
+    .map((b) => ({
+      x: b.x, y: b.y, w: b.w, h: b.h, score: b.score, kind: 'plate', override: null, auto: 'mosaic'
+    }));
+  S.faces = G.carryOverrides(prevFaces, [...faces, ...plates]);
   reclassify();
 }
 
@@ -304,7 +345,7 @@ function reclassify() {
 /* ---------- モザイク格子（プレビューと書き出しで共通） ---------- */
 function getCells(f) {
   const { W, H } = S.img;
-  const key = `${f.x}|${f.y}|${f.w}|${f.h}|${S.params.margin}|${S.params.cells}`;
+  const key = `${f.kind || 'f'}|${f.x}|${f.y}|${f.w}|${f.h}|${S.params.margin}|${S.params.cells}`;
   if (f._ck === key) return f._cells;
   const r = G.expandFace(f, S.params.margin, W, H);
   if (r.w < 2 || r.h < 2) { f._ck = key; f._cells = null; return null; }   // 極小の顔のみ「対象なし」として記録
@@ -581,9 +622,9 @@ function toggleFaceAt(pt) {
     return;
   }
   if (!S.faces.length && !S.manual.length) {
-    toast('検出された顔がありません。隠したい顔は「モザイクを手動追加」で囲んでください。');
+    toast('検出された顔やナンバーがありません。隠したい箇所は「モザイクを手動追加」で囲んでください。');
   } else {
-    toast('モザイクを消したい（または戻したい）顔の枠をタップしてください。');
+    toast('モザイクを消したい（または戻したい）枠をタップしてください。');
   }
 }
 
@@ -594,7 +635,7 @@ function finishDrawing(endP) {
   requestRender();
 }
 
-/* ---------- 手動モザイク（検出漏れの顔を、任意の数だけ追加） ---------- */
+/* ---------- 手動モザイク（検出漏れの顔やナンバーを、任意の数だけ追加） ---------- */
 function finishManual(d, endP) {
   const a = d.pts[0], b = d.pts[1] || imgPt(endP);
   const bb = G.bboxOf([a, b]);
@@ -613,7 +654,7 @@ function finishManual(d, endP) {
       toggleFaceAt(pt);
       return;
     }
-    toast('ドラッグで、モザイクをかけたい顔を囲んでください。');
+    toast('ドラッグで、モザイクをかけたい顔やナンバーを囲んでください。');
     requestRender(); return;
   }
   if (S.manual.length >= G.MAX_MANUAL) { toast(`手動で追加できるのは${G.MAX_MANUAL}件までです。`); requestRender(); return; }
@@ -640,7 +681,7 @@ function undo() { const u = S.history.pop(); if (u) u(); updateUI(); }
 function resetAll() {
   const keptFaces = S.faces.filter((f) => !isMosaic(f));
   if (!keptFaces.length && !S.regions.length) return;
-  if (!confirm('モザイクを消した顔をすべて「モザイクあり」に戻します。よろしいですか？（「戻す」で復元できます）')) return;
+  if (!confirm('モザイクを消した箇所をすべて「モザイクあり」に戻します。よろしいですか？（「戻す」で復元できます）')) return;
   const prevOverrides = S.faces.map((f) => ({ f, ov: f.override }));
   const prevRegions = S.regions;
   for (const f of S.faces) f.override = null;
@@ -668,6 +709,9 @@ function setChip(text, warn = false) { el.chip.textContent = text; el.chip.hidde
 function updateUI() {
   const has = !!S.img;
   const n = S.faces.length, m = mosaicFaces().length, kept = n - m;
+  const nPlates = S.faces.filter((f) => f.kind === 'plate').length;
+  const nFaces = n - nPlates;
+  const kindInfo = nPlates > 0 ? `［顔 ${nFaces}・ナンバー ${nPlates}］` : '';
   const st = S.detect.state;
   const modalOpen = !el.modal.hidden;
   if (el.step1 && el.step2 && el.step3) {
@@ -684,11 +728,11 @@ function updateUI() {
   el.oManual.textContent = `${S.manual.length}件`;
   if (!has) { setChip(''); return; }
   if (S.showOriginal) { setChip('元の画像を表示中（保存するとモザイクが適用されます）', true); return; }
-  if (st === 'running') setChip(`顔を検出中… ${Math.round(S.detect.progress * 100)}%｜現在 ${n}件（モザイク ${m}）`);
-  else if (st === 'loading') setChip('顔検出エンジンを準備中…（初回のみ数秒）');
-  else if (st === 'error') setChip('顔の検出に失敗しました（設定から再検出できます）', true);
-  else if (n || S.manual.length) setChip(`自動検出 ${n}件（モザイク ${m}／残す ${kept}）` + (S.manual.length ? `＋手動 ${S.manual.length}件` : ''));
-  else setChip('顔は検出されませんでした（見落としは「モザイクを手動追加」で囲めます）');
+  if (st === 'running') setChip(`顔・ナンバーを検出中… ${Math.round(S.detect.progress * 100)}%｜現在 ${n}件${kindInfo}（モザイク ${m}）`);
+  else if (st === 'loading') setChip('顔検出エンジンを準備中…（初回のみ数秒）' + (nPlates ? `｜ナンバー ${nPlates}件検出済み` : ''));
+  else if (st === 'error') setChip('顔の検出に失敗しました（設定から再検出できます）' + (nPlates ? `｜ナンバー ${nPlates}件モザイク適用` : ''), true);
+  else if (n || S.manual.length) setChip(`自動検出 ${n}件${kindInfo}（モザイク ${m}／残す ${kept}）` + (S.manual.length ? `＋手動 ${S.manual.length}件` : ''));
+  else setChip('顔・ナンバーは検出されませんでした（見落としは「モザイクを手動追加」で囲めます）');
 }
 
 /* ---------- 書き出し・共有（安全側：モザイクを適用できなければ書き出さない） ---------- */

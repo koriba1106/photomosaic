@@ -6,7 +6,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#b85652">
-<meta name="description" content="写り込んだ顔を自動でモザイクにし、残したい人の顔はタップで簡単に切り替えられる、端末内で完結する写真ツール">
+<meta name="description" content="写り込んだ顔や車のナンバーを自動でモザイクにし、残したい箇所はタップで簡単に切り替えられる、端末内で完結する写真ツール">
 <title>写り込み顔モザイク</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -25,7 +25,7 @@
       <div class="mark" aria-hidden="true">▦</div>
       <div>
         <h1>写り込み顔モザイク</h1>
-        <p>検出した顔に自動でモザイク。消したい顔はタップで切り替え</p>
+        <p>検出した顔・車のナンバーに自動でモザイク。消したい枠はタップで切り替え</p>
       </div>
     </div>
     <div class="header-actions">
@@ -39,7 +39,7 @@
   <div class="guide-bar">
     <div class="steps" aria-label="手順">
       <span class="step is-active" id="step-1">① 写真を選ぶ</span>
-      <span class="step" id="step-2">② 消したい顔をタップ（全員隠すならそのまま③へ）</span>
+      <span class="step" id="step-2">② 消したい枠をタップ（全て隠すならそのまま③へ）</span>
       <span class="step" id="step-3">③ 保存して確認</span>
     </div>
     <div class="legend" aria-label="枠の色">
@@ -62,7 +62,7 @@
         <canvas id="cv" aria-label="写真の編集画面"></canvas>
         <div class="empty" id="empty">
           <strong>まだ写真がありません</strong>
-          ここをタップして写真を選ぶと、写っている顔を自動でモザイクにします。
+          ここをタップして写真を選ぶと、写っている顔や車のナンバーを自動でモザイクにします。
         </div>
         <div class="chip" id="chip" role="status" aria-live="polite" hidden></div>
         <div class="zoom" id="zoom" hidden>
@@ -114,18 +114,18 @@
         <div class="field">
           <div class="field-header"><label for="r-margin">モザイクの広さ</label><output class="badge" id="o-margin" for="r-margin"></output></div>
           <input type="range" id="r-margin" min="1.2" max="2.2" step="0.1" value="1.6">
-          <small>右ほど髪や耳まで広く隠します。</small>
+          <small>右ほど髪や耳・プレート周囲まで広く隠します。</small>
         </div>
         <div class="field">
           <div class="field-header"><span class="field-title" id="t-manual">手動モザイク</span><output class="badge" id="o-manual" aria-live="polite">0件</output></div>
-          <small>自動で見つからなかった顔は、「モザイクを手動追加」でドラッグして囲むと隠せます。追加した枠はタップで削除できます。</small>
+          <small>自動で見つからなかった顔やナンバーは、「モザイクを手動追加」でドラッグして囲むと隠せます。追加した枠はタップで削除できます。</small>
           <div class="button-row"><button type="button" id="btn-clear-manual" class="subtle" aria-describedby="t-manual" disabled>手動の枠を全消去</button></div>
         </div>
         <div class="field">
-          <span class="field-title" id="t-detail">顔の検出精度</span>
+          <span class="field-title" id="t-detail">自動検出の精度</span>
           <div class="choice-row detail-row" role="group" aria-labelledby="t-detail">
             <button type="button" data-detail="standard" aria-pressed="true">標準（速い）</button>
-            <button type="button" data-detail="high" aria-pressed="false">高精度（小さい顔も探す）</button>
+            <button type="button" data-detail="high" aria-pressed="false">高精度（小さい顔・ナンバーも探す）</button>
           </div>
           <small>切り替えると自動で再検出します（消したモザイクの設定は引き継がれます）。</small>
           <div class="button-row"><button type="button" id="btn-redetect" class="secondary" disabled>もう一度検出する</button></div>
@@ -136,7 +136,7 @@
     </aside>
   </main>
 
-  <p class="footer">顔検出: face-api（SSD MobileNet v1）／ライセンス: MIT／<span id="ver"></span></p>
+  <p class="footer">顔検出: face-api（SSD MobileNet v1）＋ナンバー自動検出／ライセンス: MIT／<span id="ver"></span></p>
 </div>
 
 <div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="m-title">
@@ -144,7 +144,7 @@
     <h2 id="m-title">仕上がりの確認</h2>
     <div class="modal-img"><img id="m-img" alt="モザイク処理後の写真"></div>
     <p class="status" id="m-note"></p>
-    <p class="hint">隠したい顔が残っていないか確認してください。拡大するときは「原寸で開く」か、編集画面に戻って確認できます。元の写真は変更されません。</p>
+    <p class="hint">隠したい顔やナンバーが残っていないか確認してください。拡大するときは「原寸で開く」か、編集画面に戻って確認できます。元の写真は変更されません。</p>
     <div class="modal-actions">
       <button type="button" id="m-share" class="primary" hidden>共有・写真に保存</button>
       <button type="button" id="m-download" class="primary">ダウンロード</button>

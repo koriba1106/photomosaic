@@ -140,3 +140,95 @@ test('hitRect: 最小面積優先・小さい枠にも最低限の当たり判�
 test('MAX_MANUAL は妥当な正の整数', () => {
   assert.ok(Number.isInteger(g.MAX_MANUAL) && g.MAX_MANUAL >= 50 && g.MAX_MANUAL <= 1000);
 });
+
+// テスト用の合成画像生成ヘルパー（車体＋ナンバープレート文字描画）
+function makeTestImage(W, H, bgRGB = [55, 62, 72]) {
+  const data = new Uint8ClampedArray(W * H * 4);
+  for (let i = 0; i < W * H; i++) {
+    data[i * 4] = bgRGB[0];
+    data[i * 4 + 1] = bgRGB[1];
+    data[i * 4 + 2] = bgRGB[2];
+    data[i * 4 + 3] = 255;
+  }
+  const fillRect = (x0, y0, rw, rh, rgb) => {
+    const xEnd = Math.min(W, Math.round(x0 + rw)), yEnd = Math.min(H, Math.round(y0 + rh));
+    for (let y = Math.max(0, Math.round(y0)); y < yEnd; y++) {
+      for (let x = Math.max(0, Math.round(x0)); x < xEnd; x++) {
+        const p = (y * W + x) * 4;
+        data[p] = rgb[0]; data[p + 1] = rgb[1]; data[p + 2] = rgb[2];
+      }
+    }
+  };
+  // ナンバープレート（上段：分類番号、下段：4桁ナンバー＋ハイフン）を描画
+  const drawPlate = (px, py, pw, ph, plateRGB = [245, 248, 245], charRGB = [18, 65, 35]) => {
+    fillRect(px, py, pw, ph, plateRGB);
+    // 上段の小文字群（地域名・分類番号）
+    const topY = py + ph * 0.16, topH = Math.max(2, ph * 0.20);
+    for (const rx of [0.22, 0.33, 0.48, 0.57, 0.66]) {
+      fillRect(px + pw * rx, topY, Math.max(2, pw * 0.055), topH, charRGB);
+    }
+    // 下段の4桁数字（2本の縦ストローク＋横バーを持つ数字パターン）とハイフン
+    const botY = py + ph * 0.45, botH = Math.max(4, ph * 0.42);
+    const sw = Math.max(1.5, pw * 0.032), dw = Math.max(4, pw * 0.13);
+    const digitsX = [0.10, 0.22, 0.40, 0.63, 0.80]; // ひらがな + 4桁
+    digitsX.forEach((dx, idx) => {
+      const x = px + pw * dx;
+      if (idx === 0) {
+        fillRect(x, botY + botH * 0.2, sw * 1.4, botH * 0.6, charRGB);
+      } else {
+        // 数字の左右の縦画と上・中・下の横画
+        fillRect(x, botY, sw, botH, charRGB);
+        fillRect(x + dw - sw, botY, sw, botH, charRGB);
+        fillRect(x, botY, dw, Math.max(1, botH * 0.18), charRGB);
+        fillRect(x, botY + botH * 0.42, dw, Math.max(1, botH * 0.18), charRGB);
+        fillRect(x, botY + botH * 0.82, dw, Math.max(1, botH * 0.18), charRGB);
+      }
+    });
+    // ハイフン
+    fillRect(px + pw * 0.55, botY + botH * 0.42, Math.max(2, pw * 0.05), Math.max(1.5, botH * 0.18), charRGB);
+  };
+  return { data, width: W, height: H, fillRect, drawPlate };
+}
+
+test('detectPlates: 白ナンバー・黄色ナンバー（軽）・緑ナンバー・大きいプレートを自動検出し、無関係な背景は誤検出しない', () => {
+  // 1) 白ナンバー（普通車）
+  const img1 = makeTestImage(320, 220, [50, 58, 70]);
+  img1.drawPlate(110, 120, 80, 40, [245, 247, 245], [16, 62, 34]);
+  const res1 = g.detectPlates(img1);
+  assert.ok(res1.length >= 1, '白ナンバーを検出');
+  assert.equal(res1[0].kind, 'plate');
+  assert.ok(g.iou(res1[0], { x: 110, y: 120, w: 80, h: 40 }) > 0.35, `白ナンバーの位置が一致: ${JSON.stringify(res1[0])}`);
+
+  // 2) 黄色ナンバー（軽自動車）
+  const img2 = makeTestImage(320, 220, [40, 45, 52]);
+  img2.drawPlate(90, 100, 92, 46, [242, 205, 30], [20, 20, 20]);
+  const res2 = g.detectPlates(img2);
+  assert.ok(res2.length >= 1, '黄色ナンバーを検出');
+  assert.ok(g.iou(res2[0], { x: 90, y: 100, w: 92, h: 46 }) > 0.35, `黄色ナンバーの位置が一致: ${JSON.stringify(res2[0])}`);
+
+  // 3) 緑ナンバー（事業用）
+  const img3 = makeTestImage(320, 220, [180, 185, 190]);
+  img3.drawPlate(100, 110, 88, 44, [20, 82, 48], [242, 246, 242]);
+  const res3 = g.detectPlates(img3);
+  assert.ok(res3.length >= 1, '緑ナンバーを検出');
+  assert.ok(g.iou(res3[0], { x: 100, y: 110, w: 88, h: 44 }) > 0.35, `緑ナンバーの位置が一致: ${JSON.stringify(res3[0])}`);
+
+  // 4) アップの大きなナンバープレート（ピラミッド縮小で検出）
+  const img4 = makeTestImage(480, 320, [60, 65, 75]);
+  img4.drawPlate(140, 110, 180, 90, [246, 248, 246], [15, 58, 30]);
+  const res4 = g.detectPlates(img4);
+  assert.ok(res4.length >= 1, '大きいナンバーも検出');
+  assert.ok(g.iou(res4[0], { x: 140, y: 110, w: 180, h: 90 }) > 0.35, `大きいナンバーの位置が一致: ${JSON.stringify(res4[0])}`);
+
+  // 5) ナンバーのない単色・グラデーション・赤ランプ・肌色領域では誤検出しない
+  const blank = makeTestImage(320, 220, [70, 80, 95]);
+  blank.fillRect(40, 60, 80, 40, [220, 30, 30]);   // 赤いテールランプ
+  blank.fillRect(160, 60, 80, 80, [215, 160, 125]); // 肌色領域
+  assert.equal(g.detectPlates(blank).length, 0, 'テールランプや肌色は誤検出しない');
+});
+
+test('expandFace: ナンバープレート枠（kind=plate）は縦横とも適度に拡張される', () => {
+  const p = { x: 100, y: 100, w: 80, h: 40, kind: 'plate' };
+  const r = g.expandFace(p, 1.6, 400, 300);
+  assert.ok(r.w > 80 && r.w < 110 && r.h > 40 && r.h < 60, `適度な拡張: ${JSON.stringify(r)}`);
+});
