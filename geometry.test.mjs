@@ -232,3 +232,82 @@ test('expandFace: ナンバープレート枠（kind=plate）は縦横とも適�
   const r = g.expandFace(p, 1.6, 400, 300);
   assert.ok(r.w > 80 && r.w < 110 && r.h > 40 && r.h < 60, `適度な拡張: ${JSON.stringify(r)}`);
 });
+
+test('detectPlates: 斜め角度で見かけの横幅が狭いプレートも感度を上げると検出できる', () => {
+  const img = makeTestImage(320, 220, [52, 58, 66]);
+  // 幅64 x 高さ44 (縦横比 約1.45:1 の斜め風ナンバー)
+  img.drawPlate(120, 96, 64, 44, [242, 245, 242], [18, 62, 34]);
+  const res = g.detectPlates(img, { minScore: g.RAW_MIN_PLATE_SCORE, maxScaleLevels: 3 });
+  assert.ok(res.length >= 1, '斜め比率のナンバーも下限スコアで検出');
+  assert.ok(g.iou(res[0], { x: 120, y: 96, w: 64, h: 44 }) > 0.3);
+});
+
+test('normalizeSensitivity / sensitivityToMinScore / sensitivityLabel: 境界・不正値に堅牢', () => {
+  assert.equal(g.normalizeSensitivity(50), 50);
+  assert.equal(g.normalizeSensitivity(-10), 0);
+  assert.equal(g.normalizeSensitivity(150), 100);
+  assert.equal(g.normalizeSensitivity(42.6), 43);
+  for (const bad of [null, undefined, '', NaN, Infinity, -Infinity, true, false, 'abc']) {
+    assert.equal(g.normalizeSensitivity(bad, 50), 50, `不正値フォールバック: ${String(bad)}`);
+  }
+
+  assert.equal(g.sensitivityToMinScore('face', 0), Infinity);
+  assert.equal(g.sensitivityToMinScore('plate', 0), Infinity);
+  assert.ok(Math.abs(g.sensitivityToMinScore('face', 50) - 0.45) < 1e-9);
+  assert.ok(Math.abs(g.sensitivityToMinScore('plate', 50) - 0.53) < 1e-9);
+  assert.ok(Math.abs(g.sensitivityToMinScore('face', 100) - g.RAW_MIN_FACE_SCORE) < 1e-9);
+  assert.ok(Math.abs(g.sensitivityToMinScore('plate', 100) - g.RAW_MIN_PLATE_SCORE) < 1e-9);
+
+  for (const kind of ['face', 'plate']) {
+    let prev = Infinity;
+    for (let s = 5; s <= 100; s += 5) {
+      const cur = g.sensitivityToMinScore(kind, s);
+      assert.ok(cur < prev, `${kind} sensitivity ${s} should lower threshold`);
+      prev = cur;
+    }
+  }
+
+  assert.equal(g.sensitivityLabel(0), 'OFF');
+  assert.match(g.sensitivityLabel(50), /標準/);
+  assert.match(g.sensitivityLabel(70), /広め/);
+  assert.match(g.sensitivityLabel(95), /最大/);
+});
+
+test('filterRawDetections: 顔とナンバーの感度が独立して動作し、OFFで対象のみ0件になる', () => {
+  const raw = [
+    { x: 10, y: 10, w: 50, h: 50, score: 0.72, kind: 'face' },
+    { x: 80, y: 10, w: 40, h: 40, score: 0.35, kind: 'face' },
+    { x: 150, y: 100, w: 80, h: 40, score: 0.65, kind: 'plate' },
+    { x: 240, y: 120, w: 70, h: 35, score: 0.44, kind: 'plate' }
+  ];
+
+  // 標準 (50, 50): 顔0.45以上(1件), ナンバー0.53以上(1件)
+  const std = g.filterRawDetections(raw, { faceSensitivity: 50, plateSensitivity: 50 });
+  assert.equal(std.faces.length, 1);
+  assert.equal(std.plates.length, 1);
+
+  // 顔のみ広め(85)、ナンバーは厳しめ(20): 独立性確認
+  const fWide = g.filterRawDetections(raw, { faceSensitivity: 85, plateSensitivity: 20 });
+  assert.equal(fWide.faces.length, 2);
+  assert.equal(fWide.plates.length, 0);
+
+  // 顔OFF(0)、ナンバー最大(100)
+  const fOff = g.filterRawDetections(raw, { faceSensitivity: 0, plateSensitivity: 100 });
+  assert.equal(fOff.faces.length, 0);
+  assert.equal(fOff.plates.length, 2);
+
+  // 不正入力
+  assert.deepEqual(g.filterRawDetections(null), { faces: [], plates: [] });
+  assert.deepEqual(g.filterRawDetections([null, undefined, { x: 0, y: 0, w: 20, h: 20, kind: 'face' }], { faceSensitivity: 50 }).faces.length, 1);
+});
+
+test('findMatchingBoxIndex: 種別一致かつ IoU 最大の要素を返し、他種別とは一致しない', () => {
+  const list = [
+    { x: 10, y: 10, w: 100, h: 100, kind: 'face' },
+    { x: 10, y: 10, w: 100, h: 50, kind: 'plate' }
+  ];
+  assert.equal(g.findMatchingBoxIndex(list, { x: 12, y: 12, w: 98, h: 98, kind: 'face' }), 0);
+  assert.equal(g.findMatchingBoxIndex(list, { x: 12, y: 12, w: 98, h: 48, kind: 'plate' }), 1);
+  assert.equal(g.findMatchingBoxIndex(list, { x: 10, y: 10, w: 100, h: 100, kind: 'plate' }), 1);
+  assert.equal(g.findMatchingBoxIndex(list, { x: 500, y: 500, w: 50, h: 50, kind: 'face' }), -1);
+});

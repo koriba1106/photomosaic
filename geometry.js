@@ -231,7 +231,7 @@ function detectPlatesAtScale(data, W, H, minScore = 0.5) {
     arr[y1 * stride + x1] - arr[y0 * stride + x1] - arr[y1 * stride + x0] + arr[y0 * stride + x0];
 
   const HEIGHTS = [12, 15, 18, 22, 27, 33, 40, 48];
-  const ASPECTS = [1.55, 1.85, 2.05, 2.4, 2.9, 3.5];
+  const ASPECTS = [1.35, 1.55, 1.85, 2.05, 2.4, 2.9, 3.5];
   const maxWinH = Math.min(54, Math.floor(H * 0.65));
   const maxWinW = Math.floor(W * 0.78);
   const out = [];
@@ -407,7 +407,7 @@ function detectPlatesAtScale(data, W, H, minScore = 0.5) {
           const rw = rx1b - rx, rh = ry1b - ry;
           if (rw < 18 || rh < 10) continue;
           const rAr = rw / rh;
-          if (rAr < 1.3 || rAr > 4.2) continue;
+          if (rAr < 1.2 || rAr > 4.2) continue;
 
           const lineScore = Math.min(1, validLines / 4);
           const arScore = 1 - Math.min(0.35, Math.abs(rAr - 2.0) * 0.18);
@@ -427,7 +427,10 @@ function detectPlatesAtScale(data, W, H, minScore = 0.5) {
 
 /** プレート候補の統合：1行だけの部分枠よりプレート全体を覆う枠を優先して統合する */
 function mergePlateBoxes(boxes) {
-  const sorted = boxes.slice().sort((a, b) => {
+  const capped = boxes.length > 400
+    ? boxes.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 400)
+    : boxes.slice();
+  const sorted = capped.sort((a, b) => {
     const ds = (b.score ?? 0) - (a.score ?? 0);
     if (Math.abs(ds) > 0.14) return ds;
     return (b.w * b.h) - (a.w * a.h) || ds;
@@ -495,4 +498,76 @@ export function hitRect(rects, p, view, minHalf = 22) {
     if (Math.abs(p.x - cx) <= hw && Math.abs(p.y - cy) <= hh && r.w * r.h < bestArea) { best = i; bestArea = r.w * r.h; }
   });
   return best;
+}
+
+/* ---------- 認識感度の変換・フィルタリング ---------- */
+export const DEFAULT_SENSITIVITY = 50;
+export const RAW_MIN_FACE_SCORE = 0.22;
+export const RAW_MIN_PLATE_SCORE = 0.36;
+
+const SENS_BOUNDS = {
+  face: { strict: 0.84, standard: 0.45, wide: RAW_MIN_FACE_SCORE },
+  plate: { strict: 0.81, standard: 0.53, wide: RAW_MIN_PLATE_SCORE }
+};
+
+/** 感度入力を 0〜100 の整数へ正規化（不正値は fallback を返す） */
+export function normalizeSensitivity(v, fallback = DEFAULT_SENSITIVITY) {
+  if (v === null || v === undefined || v === '' || typeof v === 'boolean') return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return clamp(Math.round(n), 0, 100);
+}
+
+/** 認識感度 (0=OFF, 1..100) を最小信頼度スコア (Infinity または 0..1) へ変換 */
+export function sensitivityToMinScore(kind, sensitivity) {
+  const s = normalizeSensitivity(sensitivity, DEFAULT_SENSITIVITY);
+  if (s <= 0) return Infinity;
+  const b = kind === 'plate' ? SENS_BOUNDS.plate : SENS_BOUNDS.face;
+  if (s <= 50) return b.strict - (s / 50) * (b.strict - b.standard);
+  return b.standard - ((s - 50) / 50) * (b.standard - b.wide);
+}
+
+/** 感度の説明ラベル（バッジ・読み上げ用） */
+export function sensitivityLabel(sensitivity) {
+  const s = normalizeSensitivity(sensitivity, DEFAULT_SENSITIVITY);
+  if (s === 0) return 'OFF';
+  if (s <= 25) return `かなり厳しめ (${s})`;
+  if (s <= 44) return `厳しめ (${s})`;
+  if (s <= 55) return `標準 (${s})`;
+  if (s <= 75) return `広め (${s})`;
+  return `最大 (${s})`;
+}
+
+/** 生の検出候補配列を、顔・ナンバーそれぞれの感度閾値で独立に絞り込む */
+export function filterRawDetections(raw, { faceSensitivity = DEFAULT_SENSITIVITY, plateSensitivity = DEFAULT_SENSITIVITY } = {}) {
+  if (!Array.isArray(raw)) return { faces: [], plates: [] };
+  const faceMin = sensitivityToMinScore('face', faceSensitivity);
+  const plateMin = sensitivityToMinScore('plate', plateSensitivity);
+  const faces = [];
+  const plates = [];
+  for (const b of raw) {
+    if (!b || typeof b !== 'object') continue;
+    const score = Number.isFinite(b.score) ? b.score : 1;
+    if (b.kind === 'plate') {
+      if (score >= plateMin) plates.push(b);
+    } else {
+      if (score >= faceMin) faces.push(b);
+    }
+  }
+  return { faces, plates };
+}
+
+/** target と同一種別で最も重なりが大きい要素の添字を返す（閾値未満なら -1） */
+export function findMatchingBoxIndex(list, target, thr = 0.5) {
+  if (!Array.isArray(list) || !target) return -1;
+  const minIou = target.kind === 'plate' ? Math.min(thr, 0.35) : thr;
+  let bestIdx = -1, bestIou = minIou;
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item) continue;
+    if (target.kind && item.kind && target.kind !== item.kind) continue;
+    const v = iou(target, item);
+    if (v > bestIou) { bestIou = v; bestIdx = i; }
+  }
+  return bestIdx;
 }

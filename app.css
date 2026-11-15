@@ -326,6 +326,80 @@
   flex: 2;
 }
 
+.mobile-only-btn,
+.sheet-close-btn {
+  display: none;
+}
+
+.panel-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sens-field .field-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mini-reset {
+  min-height: 28px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: .74rem;
+  font-weight: 650;
+  background: #fff;
+  border: 1px solid var(--line);
+  color: var(--deep);
+}
+
+.slider-row {
+  display: grid;
+  grid-template-columns: 42px 1fr 42px;
+  gap: 8px;
+  align-items: center;
+}
+
+.step-btn {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.15rem;
+  line-height: 1;
+  font-weight: 700;
+  border-radius: 11px;
+  background: var(--pale);
+  border: 1px solid var(--line);
+  color: var(--deep);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.range-scale {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  font-size: .72rem;
+  color: var(--muted);
+  padding: 0 50px;
+  margin-top: -3px;
+}
+
+.range-scale span:nth-child(2) {
+  text-align: center;
+}
+
+.range-scale span:nth-child(3) {
+  text-align: right;
+}
+
+.badge.is-off {
+  background: #efe6e5;
+  color: var(--muted);
+}
+
 .hint {
   min-height: 2.5em;
   background: var(--pale);
@@ -502,6 +576,99 @@ a.btn:focus-visible {
   .hint {
     margin-top: 2px;
   }
+
+  .mobile-only-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .quick-actions {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .quick-actions button {
+    padding: .5rem .35rem;
+    font-size: clamp(.76rem, 3.3vw, .9rem);
+    white-space: nowrap;
+  }
+
+  .quick-actions #undo {
+    flex: 0.85;
+  }
+
+  .quick-actions #btn-quick-settings {
+    flex: 1.15;
+  }
+
+  .quick-actions #save {
+    flex: 1.55;
+  }
+
+  /* スマホ縦画面：設定シートを開いた時は写真のみを上半分に確保し、下部にシートを固定表示 */
+  .app.settings-open {
+    padding: 8px 10px min(52vh, 450px);
+    padding: 8px 10px min(52dvh, 450px);
+  }
+
+  .app.settings-open header,
+  .app.settings-open .guide-bar,
+  .app.settings-open .file-zone,
+  .app.settings-open .footer {
+    display: none;
+  }
+
+  .app.settings-open .editor {
+    padding: 8px;
+    border-radius: 16px;
+  }
+
+  .app.settings-open .preview {
+    height: clamp(190px, calc(48vh - 30px), 440px);
+    height: clamp(190px, calc(48dvh - 30px), 440px);
+    margin-top: 0;
+  }
+
+  .app.settings-open .quickbar {
+    display: none;
+  }
+
+  .app.settings-open .settings {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 15;
+    max-height: min(50vh, 430px);
+    max-height: min(50dvh, 430px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    margin: 0;
+    border-radius: 20px 20px 0 0;
+    padding: 0 14px calc(14px + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -8px 28px rgba(51, 33, 32, .22);
+    border-bottom: none;
+  }
+
+  .app.settings-open .settings .panel-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #fff;
+    padding: 12px 0 10px;
+    margin: 0 0 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .app.settings-open .sheet-close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: .4rem .95rem;
+    font-size: .86rem;
+  }
 }
 
 @media (max-width: 820px) and (max-height: 700px) {
@@ -519,6 +686,16 @@ a.btn:focus-visible {
     height: clamp(170px, calc(100vh - 388px), 680px);
     height: clamp(170px, calc(100dvh - 388px), 680px);
   }
+
+  .app.settings-open .preview {
+    height: clamp(160px, calc(46vh - 28px), 360px);
+    height: clamp(160px, calc(46dvh - 28px), 360px);
+  }
+
+  .app.settings-open .settings {
+    max-height: min(52vh, 390px);
+    max-height: min(52dvh, 390px);
+  }
 }
 
 @media (max-width: 380px) {
@@ -532,6 +709,21 @@ a.btn:focus-visible {
 
   .brand .mark {
     display: none;
+  }
+
+  .slider-row {
+    grid-template-columns: 38px 1fr 38px;
+    gap: 6px;
+  }
+
+  .step-btn {
+    width: 38px;
+    height: 40px;
+  }
+
+  .range-scale {
+    padding: 0 44px;
+    font-size: .68rem;
   }
 }
 
@@ -563,6 +755,55 @@ a.btn:focus-visible {
     position: static;
     box-shadow: none;
   }
+
+  .mobile-only-btn,
+  .app.settings-open .sheet-close-btn {
+    display: none;
+  }
+
+  .app.settings-open {
+    padding: 8px 14px;
+  }
+
+  .app.settings-open header,
+  .app.settings-open .file-zone {
+    display: flex;
+  }
+
+  .app.settings-open .footer {
+    display: block;
+  }
+
+  .app.settings-open .editor {
+    padding: clamp(14px, 2.4vw, 22px);
+    border-radius: 20px;
+  }
+
+  .app.settings-open .preview {
+    height: calc(100vh - 84px);
+    height: calc(100dvh - 84px);
+  }
+
+  .app.settings-open .quickbar {
+    display: grid;
+  }
+
+  .app.settings-open .settings {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    border-radius: 20px;
+    padding: clamp(14px, 2.4vw, 22px);
+    box-shadow: 0 5px 22px rgba(51, 33, 32, .04);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .app.settings-open .settings .panel-head {
+    position: static;
+    padding: 0;
+    margin: 0 0 14px;
+    border-bottom: none;
+  }
 }
 
 /* ---------- タップしやすさ（最小 40〜44px） ---------- */
@@ -580,7 +821,59 @@ a.btn:focus-visible {
 }
 
 input[type="range"] {
-  height: 28px;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 42px;
+  margin: 0;
+  background: transparent;
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--pale);
+  border: 1px solid var(--line);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -10px;
+  border-radius: 50%;
+  background: var(--uguisu);
+  border: 3px solid #fff;
+  box-shadow: 0 2px 6px rgba(51, 33, 32, .28);
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--pale);
+  border: 1px solid var(--line);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--uguisu);
+  border: 3px solid #fff;
+  box-shadow: 0 2px 6px rgba(51, 33, 32, .28);
+  cursor: pointer;
+}
+
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(212, 122, 118, .45), 0 2px 6px rgba(51, 33, 32, .28);
+}
+
+input[type="range"]:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgba(212, 122, 118, .45), 0 2px 6px rgba(51, 33, 32, .28);
 }
 
 /* ---------- ツールボタンの改行制御 ---------- */

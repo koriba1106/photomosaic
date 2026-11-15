@@ -18,12 +18,11 @@ try { framed = window.top !== window.self; } catch { framed = true; }
 if (framed) throw new Error('framed');
 
 const $ = (s) => document.querySelector(s);
-const APP_VERSION = '1.3.0';                // package.json・sw.js と一致させる（テストで検査）
+const APP_VERSION = '1.4.0';                // package.json・sw.js と一致させる（テストで検査）
 const MAX_FILE_BYTES = 100 * 1024 * 1024;   // 入力ファイルの上限
 const MAX_SOURCE_PIXELS = 120e6;            // デコード前に弾く上限（画像爆弾対策）
 const MAX_PIXELS = 16e6;                    // 処理用に縮小する上限（iOS Safari の canvas 上限を下回る）
 const MAX_SIDE = 8192;
-const MIN_CONF = 0.45;                      // 見逃しを避けるため低め
 const KEEP_THRESHOLD = 0.5;                 // 領域指定との互換用
 const PREVIEW_SIDE = 1600;
 const PARAMS = new URLSearchParams(location.search);
@@ -41,6 +40,9 @@ const el = {
   busy: $('#busy'), busyText: $('#busy-text'), hint: $('#hint'), settings: $('#settings'), boot: $('#boot-error'),
   file: $('#file'), fileZone: $('#file-zone'), undo: $('#undo'), save: $('#save'), reset: $('#btn-reset'), redetect: $('#btn-redetect'),
   original: $('#btn-original'), info: $('#info'), settingsBtn: $('#btn-settings'),
+  quickSettingsBtn: $('#btn-quick-settings'), settingsCloseBtn: $('#btn-settings-close'),
+  faceSens: $('#r-face-sens'), oFaceSens: $('#o-face-sens'), faceDec: $('#btn-face-dec'), faceInc: $('#btn-face-inc'), faceReset: $('#btn-face-reset'),
+  plateSens: $('#r-plate-sens'), oPlateSens: $('#o-plate-sens'), plateDec: $('#btn-plate-dec'), plateInc: $('#btn-plate-inc'), plateReset: $('#btn-plate-reset'),
   step1: $('#step-1'), step2: $('#step-2'), step3: $('#step-3'),
   modal: $('#modal'), mOpen: $('#m-open'), mImg: $('#m-img'), mNote: $('#m-note'), mShare: $('#m-share'), mDownload: $('#m-download'), mClose: $('#m-close')
 };
@@ -50,11 +52,15 @@ const S = {
   img: null,            // { source, preview, W, H, name, scaled, origW, origH }
   view: { s: 1, tx: 0, ty: 0 }, fitted: true, minS: 0.05, maxS: 16,
   regions: [], faces: [], raw: [], history: [],
+  overrideHistory: [],  // ユーザーが手動切替した顔/ナンバー履歴（感度変更で一時消滅→再出現時も保持）
   manual: [],           // 手動で追加したモザイク枠 { x, y, w, h, manual:true, auto:'mosaic' }（画像座標・整数）
-  exporting: false,
+  exporting: false, settingsOpen: false,
   tool: 'toggle', showOriginal: false,
-  params: { cells: 7, margin: 1.6, detail: 'standard' },
-  detect: { state: 'idle', progress: 0, run: 0 },
+  params: {
+    cells: 7, margin: 1.6, detail: 'standard',
+    faceSens: G.DEFAULT_SENSITIVITY, plateSens: G.DEFAULT_SENSITIVITY
+  },
+  detect: { state: 'idle', progress: 0, run: 0, faceFetched: false, plateFetched: false },
   cssW: 0, cssH: 0, dpr: 1, loadSeq: 0,
   pointers: new Map(), gesture: null, drawing: null, spaceDown: false,
   dirty: false, resultUrl: null, resultBlob: null,
@@ -142,7 +148,10 @@ async function loadFile(file) {
     if (S.img && S.img.source.close) S.img.source.close();
     const base = (file.name || 'photo').replace(/\.[^.]+$/, '').replace(/[^\w\u3040-\u30ff\u3400-\u9fff-]+/g, '_').replace(/^[._-]+/, '').slice(0, 60) || 'photo';
     S.img = { source, preview, W: w, H: h, name: base, scaled, origW: nw, origH: nh };
-    S.regions = []; S.faces = []; S.manual = []; S.raw = []; S.history = []; S.drawing = null; S.gesture = null; S.pointers.clear();
+    S.regions = []; S.faces = []; S.manual = []; S.raw = []; S.history = []; S.overrideHistory = [];
+    S.detect.faceFetched = false; S.detect.plateFetched = false;
+    S.drawing = null; S.gesture = null; S.pointers.clear();
+    setSettingsOpen(false);
     el.app.classList.add('has-image'); el.stage.classList.add('has-image');
     el.zoom.hidden = false;
     closeResult();
@@ -196,7 +205,7 @@ async function ensureEngine() {
 
 async function detectCanvas(canvas) {
   const toBoxes = (r) => r.map((d) => ({ x: d.box.x, y: d.box.y, w: d.box.width, h: d.box.height, score: d.score }));
-  const opt = new window.faceapi.SsdMobilenetv1Options({ minConfidence: MIN_CONF, maxResults: 100 });
+  const opt = new window.faceapi.SsdMobilenetv1Options({ minConfidence: G.RAW_MIN_FACE_SCORE, maxResults: 100 });
   try {
     return toBoxes(await window.faceapi.detectAllFaces(canvas, opt));
   } catch (e) {
@@ -228,8 +237,9 @@ function detectPlatesFromImage(img, work, wctx, detail) {
   work.width = pw; work.height = ph;
   wctx.imageSmoothingQuality = 'high';
   wctx.drawImage(img.source, 0, 0, img.W, img.H, 0, 0, pw, ph);
+  // スライダーを右端（最大感度）に動かした時も再解析なしで即反映できるよう、収集時は下限スコアで検出する
   const found = G.detectPlates(wctx.getImageData(0, 0, pw, ph), {
-    minScore: detail === 'high' ? 0.50 : 0.53,
+    minScore: G.RAW_MIN_PLATE_SCORE,
     maxScaleLevels: detail === 'high' ? 4 : 3
   });
   return found.map((p) => ({
@@ -242,24 +252,48 @@ function detectPlatesFromImage(img, work, wctx, detail) {
   }));
 }
 
-async function runDetection() {
+async function runDetection({ resetRaw = true } = {}) {
   const img = S.img; if (!img) return;
   const run = ++S.detect.run;
   const alive = () => run === S.detect.run && S.img === img;
   const prevFaces = S.faces.slice();
-  S.raw = [];
-  S.detect.state = 'loading'; S.detect.progress = 0; updateUI();
+  if (resetRaw) {
+    S.raw = [];
+    S.detect.faceFetched = false;
+    S.detect.plateFetched = false;
+  }
+
+  const wantPlate = S.params.plateSens > 0 && (resetRaw || !S.detect.plateFetched);
+  const wantFace = S.params.faceSens > 0 && (resetRaw || !S.detect.faceFetched);
+
+  if (!wantPlate && !wantFace) {
+    S.detect.state = 'done'; S.detect.progress = 1;
+    applyDetections(prevFaces);
+    return;
+  }
+
+  S.detect.state = wantFace ? 'loading' : 'running'; S.detect.progress = 0; updateUI();
 
   const work = document.createElement('canvas');
   const wctx = work.getContext('2d', { willReadFrequently: true });
 
   // ナンバープレートは外部モデル不要のため即座に検出して反映（顔検出エンジン準備中でも先にモザイク適用）
-  try {
-    for (const p of detectPlatesFromImage(img, work, wctx, S.params.detail)) S.raw.push(p);
-    if (S.raw.length) applyDetections(prevFaces);
-  } catch (e) { console.warn('plate detect failed', e); }
-  await tick();
-  if (!alive()) return;
+  if (wantPlate) {
+    try {
+      S.raw = S.raw.filter((b) => b.kind !== 'plate');
+      for (const p of detectPlatesFromImage(img, work, wctx, S.params.detail)) S.raw.push(p);
+      S.detect.plateFetched = true;
+      applyDetections(prevFaces);
+    } catch (e) { console.warn('plate detect failed', e); }
+    await tick();
+    if (!alive()) return;
+  }
+
+  if (!wantFace) {
+    S.detect.state = 'done'; S.detect.progress = 1;
+    updateUI();
+    return;
+  }
 
   try { await ensureEngine(); }
   catch (e) {
@@ -273,6 +307,7 @@ async function runDetection() {
   }
   if (!alive()) return;
 
+  S.raw = S.raw.filter((b) => b.kind === 'plate');
   const levels = detectionLevels(img.W, img.H, S.params.detail);
   const total = levels.reduce((a, l) => a + (l.tiles ? l.tiles.length : 1), 0);
   let done = 0;
@@ -311,6 +346,7 @@ async function runDetection() {
     return;
   }
   if (!alive()) return;
+  S.detect.faceFetched = true;
   S.detect.state = 'done'; updateUI();
   if (S.params.detail === 'standard' && Math.max(img.W, img.H) >= 2400 && !S.seenDetailTip) {
     S.seenDetailTip = true;
@@ -318,9 +354,11 @@ async function runDetection() {
   }
 }
 
-function applyDetections(prevFaces = []) {
-  const rawFaces = S.raw.filter((b) => b.kind !== 'plate');
-  const rawPlates = S.raw.filter((b) => b.kind === 'plate');
+function applyDetections(prevFaces = S.faces) {
+  const { faces: rawFaces, plates: rawPlates } = G.filterRawDetections(S.raw, {
+    faceSensitivity: S.params.faceSens,
+    plateSensitivity: S.params.plateSens
+  });
   const faces = G.mergeBoxes(rawFaces).map((b) => ({
     x: b.x, y: b.y, w: b.w, h: b.h, score: b.score, kind: 'face', override: null, auto: 'mosaic'
   }));
@@ -329,7 +367,23 @@ function applyDetections(prevFaces = []) {
     .map((b) => ({
       x: b.x, y: b.y, w: b.w, h: b.h, score: b.score, kind: 'plate', override: null, auto: 'mosaic'
     }));
-  S.faces = G.carryOverrides(prevFaces, [...faces, ...plates]);
+  const nextFaces = [...faces, ...plates];
+
+  // スライダー連続操作時の負荷を抑えるため、同一矩形のモザイク格子キャッシュを再利用する
+  if (prevFaces.length) {
+    const cellMap = new Map();
+    for (const pf of prevFaces) {
+      if (pf._ck) cellMap.set(`${pf.kind}|${pf.x}|${pf.y}|${pf.w}|${pf.h}`, pf);
+    }
+    for (const nf of nextFaces) {
+      const hit = cellMap.get(`${nf.kind}|${nf.x}|${nf.y}|${nf.w}|${nf.h}`);
+      if (hit) { nf._ck = hit._ck; nf._cells = hit._cells; }
+    }
+  }
+
+  if (S.overrideHistory.length) G.carryOverrides(S.overrideHistory, nextFaces);
+  if (prevFaces.length) G.carryOverrides(prevFaces, nextFaces);
+  S.faces = nextFaces;
   reclassify();
 }
 
@@ -600,6 +654,26 @@ el.cv.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 /* ---------- 顔タップでモザイク ON / OFF 切り替え（A案） ---------- */
+function recordOverride(box, ov) {
+  const idx = G.findMatchingBoxIndex(S.overrideHistory, box);
+  if (ov == null) {
+    if (idx >= 0) S.overrideHistory.splice(idx, 1);
+    return;
+  }
+  const entry = { x: box.x, y: box.y, w: box.w, h: box.h, kind: box.kind || 'face', override: ov };
+  if (idx >= 0) S.overrideHistory[idx] = entry;
+  else {
+    S.overrideHistory.push(entry);
+    if (S.overrideHistory.length > 500) S.overrideHistory.shift();
+  }
+}
+function setBoxOverride(boxSnap, ov) {
+  recordOverride(boxSnap, ov);
+  const fi = G.findMatchingBoxIndex(S.faces, boxSnap);
+  if (fi >= 0) S.faces[fi].override = ov;
+  reclassify();
+}
+
 function toggleFaceAt(pt) {
   // 手動追加された枠に当たった場合は削除
   const mi = G.hitRect(S.manual, pt, S.view);
@@ -615,9 +689,9 @@ function toggleFaceAt(pt) {
     const f = S.faces[fi];
     const prev = f.override;
     const next = isMosaic(f) ? 'keep' : 'mosaic';
-    f.override = next;
-    pushHistory(() => { f.override = prev; reclassify(); });
-    reclassify();
+    const snap = { x: f.x, y: f.y, w: f.w, h: f.h, kind: f.kind || 'face' };
+    setBoxOverride(snap, next);
+    pushHistory(() => setBoxOverride(snap, prev));
     toast(next === 'keep' ? 'モザイクを消しました（もう一度タップで戻せます）。' : 'モザイクをかけました。', 2200);
     return;
   }
@@ -680,14 +754,23 @@ function pushHistory(undoFn) { S.history.push(undoFn); if (S.history.length > 20
 function undo() { const u = S.history.pop(); if (u) u(); updateUI(); }
 function resetAll() {
   const keptFaces = S.faces.filter((f) => !isMosaic(f));
-  if (!keptFaces.length && !S.regions.length) return;
+  const hasKeptHistory = S.overrideHistory.some((o) => o.override === 'keep');
+  if (!keptFaces.length && !S.regions.length && !hasKeptHistory) return;
   if (!confirm('モザイクを消した箇所をすべて「モザイクあり」に戻します。よろしいですか？（「戻す」で復元できます）')) return;
-  const prevOverrides = S.faces.map((f) => ({ f, ov: f.override }));
+  const prevHistory = S.overrideHistory.map((o) => ({ ...o }));
+  const prevFaceOverrides = S.faces.map((f) => ({ x: f.x, y: f.y, w: f.w, h: f.h, kind: f.kind || 'face', ov: f.override }));
   const prevRegions = S.regions;
+  S.overrideHistory = [];
   for (const f of S.faces) f.override = null;
   S.regions = [];
   pushHistory(() => {
-    for (const item of prevOverrides) item.f.override = item.ov;
+    S.overrideHistory = prevHistory.map((o) => ({ ...o }));
+    for (const f of S.faces) f.override = null;
+    G.carryOverrides(S.overrideHistory, S.faces);
+    for (const item of prevFaceOverrides) {
+      const idx = G.findMatchingBoxIndex(S.faces, item);
+      if (idx >= 0) S.faces[idx].override = item.ov;
+    }
     S.regions = prevRegions;
     reclassify();
   });
@@ -711,7 +794,14 @@ function updateUI() {
   const n = S.faces.length, m = mosaicFaces().length, kept = n - m;
   const nPlates = S.faces.filter((f) => f.kind === 'plate').length;
   const nFaces = n - nPlates;
-  const kindInfo = nPlates > 0 ? `［顔 ${nFaces}・ナンバー ${nPlates}］` : '';
+  const faceOff = S.params.faceSens === 0;
+  const plateOff = S.params.plateSens === 0;
+  const kindParts = [];
+  if (faceOff) kindParts.push('顔 OFF');
+  else if (nFaces > 0 || nPlates > 0 || plateOff) kindParts.push(`顔 ${nFaces}`);
+  if (plateOff) kindParts.push('ナンバー OFF');
+  else if (nPlates > 0 || faceOff) kindParts.push(`ナンバー ${nPlates}`);
+  const kindInfo = kindParts.length ? `［${kindParts.join('・')}］` : '';
   const st = S.detect.state;
   const modalOpen = !el.modal.hidden;
   if (el.step1 && el.step2 && el.step3) {
@@ -722,8 +812,8 @@ function updateUI() {
   el.undo.disabled = !S.history.length;
   el.save.disabled = !has || st === 'loading';
   el.original.disabled = !has;
-  el.redetect.disabled = !has || st === 'loading' || st === 'running';
-  el.reset.disabled = !has || (kept === 0 && !S.regions.length);
+  el.redetect.disabled = !has || st === 'loading' || st === 'running' || (faceOff && plateOff);
+  el.reset.disabled = !has || (kept === 0 && !S.regions.length && !S.overrideHistory.some((o) => o.override === 'keep'));
   el.clearManual.disabled = !has || !S.manual.length;
   el.oManual.textContent = `${S.manual.length}件`;
   if (!has) { setChip(''); return; }
@@ -731,8 +821,9 @@ function updateUI() {
   if (st === 'running') setChip(`顔・ナンバーを検出中… ${Math.round(S.detect.progress * 100)}%｜現在 ${n}件${kindInfo}（モザイク ${m}）`);
   else if (st === 'loading') setChip('顔検出エンジンを準備中…（初回のみ数秒）' + (nPlates ? `｜ナンバー ${nPlates}件検出済み` : ''));
   else if (st === 'error') setChip('顔の検出に失敗しました（設定から再検出できます）' + (nPlates ? `｜ナンバー ${nPlates}件モザイク適用` : ''), true);
+  else if (faceOff && plateOff && !S.manual.length) setChip('自動検出が両方OFFです（設定の感度スライダーで調整、または手動追加できます）', true);
   else if (n || S.manual.length) setChip(`自動検出 ${n}件${kindInfo}（モザイク ${m}／残す ${kept}）` + (S.manual.length ? `＋手動 ${S.manual.length}件` : ''));
-  else setChip('顔・ナンバーは検出されませんでした（見落としは「モザイクを手動追加」で囲めます）');
+  else setChip('顔・ナンバーは検出されませんでした（設定の感度を上げるか、「モザイクを手動追加」で囲めます）');
 }
 
 /* ---------- 書き出し・共有（安全側：モザイクを適用できなければ書き出さない） ---------- */
@@ -821,6 +912,95 @@ el.mClose.addEventListener('click', closeResult);
 el.modal.addEventListener('click', (e) => { if (e.target === el.modal) closeResult(); });
 window.addEventListener('pagehide', closeResult);
 
+/* ---------- 認識感度スライダー・スマホ設定シート ---------- */
+function syncSensitivityUI() {
+  const f = S.params.faceSens, p = S.params.plateSens;
+  const fLbl = G.sensitivityLabel(f), pLbl = G.sensitivityLabel(p);
+  el.faceSens.value = String(f);
+  el.faceSens.setAttribute('aria-valuetext', fLbl);
+  el.oFaceSens.textContent = fLbl;
+  el.oFaceSens.classList.toggle('is-off', f === 0);
+  el.faceDec.disabled = f <= 0;
+  el.faceInc.disabled = f >= 100;
+  el.faceReset.disabled = f === G.DEFAULT_SENSITIVITY;
+
+  el.plateSens.value = String(p);
+  el.plateSens.setAttribute('aria-valuetext', pLbl);
+  el.oPlateSens.textContent = pLbl;
+  el.oPlateSens.classList.toggle('is-off', p === 0);
+  el.plateDec.disabled = p <= 0;
+  el.plateInc.disabled = p >= 100;
+  el.plateReset.disabled = p === G.DEFAULT_SENSITIVITY;
+}
+
+function applySensitivity(kind, rawValue) {
+  const next = G.normalizeSensitivity(rawValue, G.DEFAULT_SENSITIVITY);
+  const prev = kind === 'face' ? S.params.faceSens : S.params.plateSens;
+  if (kind === 'face') S.params.faceSens = next;
+  else S.params.plateSens = next;
+  syncSensitivityUI();
+  if (next === prev && (!S.img || (kind === 'face' ? S.detect.faceFetched : S.detect.plateFetched) || next === 0)) return;
+  if (!S.img) return;
+
+  if (kind === 'plate' && next > 0 && !S.detect.plateFetched) {
+    if (S.detect.state === 'loading' || S.detect.state === 'running') {
+      // 顔検出の実行を中断せず、ナンバーだけ即時に抽出して追加する
+      try {
+        const work = document.createElement('canvas');
+        const wctx = work.getContext('2d', { willReadFrequently: true });
+        S.raw = S.raw.filter((b) => b.kind !== 'plate');
+        for (const p of detectPlatesFromImage(S.img, work, wctx, S.params.detail)) S.raw.push(p);
+        S.detect.plateFetched = true;
+        applyDetections();
+      } catch (e) { console.warn('plate detect failed', e); }
+      return;
+    }
+    runDetection({ resetRaw: false });
+    return;
+  }
+
+  if (kind === 'face' && next > 0 && !S.detect.faceFetched) {
+    if (S.detect.state !== 'loading' && S.detect.state !== 'running') {
+      runDetection({ resetRaw: false });
+      return;
+    }
+  }
+
+  applyDetections();
+}
+
+const isMobileSheetLayout = () =>
+  window.matchMedia('(max-width: 820px)').matches &&
+  !window.matchMedia('(max-height: 520px) and (orientation: landscape)').matches;
+
+function setSettingsOpen(open) {
+  const mobile = isMobileSheetLayout();
+  const next = mobile && !!open;
+  if (S.settingsOpen === next && el.app.classList.contains('settings-open') === next) return;
+  S.settingsOpen = next;
+  el.app.classList.toggle('settings-open', next);
+  el.settingsBtn.setAttribute('aria-expanded', String(next));
+  el.quickSettingsBtn.setAttribute('aria-expanded', String(next));
+  if (next) {
+    if (S.showOriginal) syncToolbar(false);
+    const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: calm ? 'auto' : 'smooth' });
+    });
+  }
+}
+
+el.faceSens.addEventListener('input', (e) => applySensitivity('face', e.target.value));
+el.faceDec.addEventListener('click', () => applySensitivity('face', S.params.faceSens - 5));
+el.faceInc.addEventListener('click', () => applySensitivity('face', S.params.faceSens + 5));
+el.faceReset.addEventListener('click', () => applySensitivity('face', G.DEFAULT_SENSITIVITY));
+
+el.plateSens.addEventListener('input', (e) => applySensitivity('plate', e.target.value));
+el.plateDec.addEventListener('click', () => applySensitivity('plate', S.params.plateSens - 5));
+el.plateInc.addEventListener('click', () => applySensitivity('plate', S.params.plateSens + 5));
+el.plateReset.addEventListener('click', () => applySensitivity('plate', G.DEFAULT_SENSITIVITY));
+syncSensitivityUI();
+
 /* ---------- 画面部品のイベント ---------- */
 document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
 el.original.addEventListener('click', toggleOriginal);
@@ -830,7 +1010,7 @@ document.querySelectorAll('[data-detail]').forEach((b) => b.addEventListener('cl
   S.params.detail = next;
   document.querySelectorAll('[data-detail]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   if (S.img && changed) {
-    toast(next === 'high' ? '高精度で再検出しています…' : '標準設定で再検出しています…');
+    toast(next === 'high' ? '高精度で再探索しています…' : '標準設定で再探索しています…');
     runDetection();
   }
 }));
@@ -838,9 +1018,19 @@ $('#r-cells').addEventListener('input', (e) => { S.params.cells = +e.target.valu
 $('#r-margin').addEventListener('input', (e) => { S.params.margin = +e.target.value; $('#o-margin').textContent = `×${S.params.margin.toFixed(1)}`; requestRender(); });
 $('#o-cells').textContent = `${S.params.cells}分割`; $('#o-margin').textContent = `×${S.params.margin.toFixed(1)}`;
 
-el.settingsBtn.addEventListener('click', () => {
+function onSettingsTrigger() {
+  if (isMobileSheetLayout()) {
+    setSettingsOpen(!S.settingsOpen);
+    return;
+  }
   const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
   el.settings.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' });
+}
+el.settingsBtn.addEventListener('click', onSettingsTrigger);
+el.quickSettingsBtn.addEventListener('click', () => setSettingsOpen(true));
+el.settingsCloseBtn.addEventListener('click', () => {
+  setSettingsOpen(false);
+  if (isMobileSheetLayout() && el.quickSettingsBtn) el.quickSettingsBtn.focus();
 });
 el.redetect.addEventListener('click', () => { if (S.img) runDetection(); });
 el.reset.addEventListener('click', resetAll);
@@ -867,6 +1057,7 @@ document.addEventListener('paste', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (!el.modal.hidden) { if (e.key === 'Escape') closeResult(); return; }
+  if (S.settingsOpen && e.key === 'Escape') { setSettingsOpen(false); return; }
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
@@ -882,8 +1073,14 @@ document.addEventListener('keyup', (e) => { if (e.key === ' ') { S.spaceDown = f
 window.addEventListener('blur', () => { S.spaceDown = false; updateCursor(); });
 document.addEventListener('gesturestart', (e) => e.preventDefault());   // iOS: ページ全体のピンチ拡大を防ぐ
 
-new ResizeObserver(() => resizeCanvas()).observe(el.stage);
-window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 250));
+new ResizeObserver(() => {
+  if (S.settingsOpen && !isMobileSheetLayout()) setSettingsOpen(false);
+  resizeCanvas();
+}).observe(el.stage);
+window.addEventListener('orientationchange', () => setTimeout(() => {
+  if (S.settingsOpen && !isMobileSheetLayout()) setSettingsOpen(false);
+  resizeCanvas();
+}, 250));
 
 el.ver.textContent = `v${APP_VERSION}`;
 syncToolbar(false);
@@ -894,6 +1091,6 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 }
 
 // テスト用フック（手元の環境で ?debug を付けた時だけ公開。公開サイトでは無効）
-if (DEBUG) window.__fm = { S, loadFile, runDetection, isMosaic, getCells, APP_VERSION };
+if (DEBUG) window.__fm = { S, loadFile, runDetection, applyDetections, applySensitivity, setSettingsOpen, isMosaic, getCells, APP_VERSION };
 
 document.documentElement.setAttribute('data-ready', '1');   // guard.js への「起動できた」合図
